@@ -26,3 +26,5 @@ fixture_ticks/
 parity_ref.json
 
 rust_out.json
+rust_out_rel.json
+binding_out.json

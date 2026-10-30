@@ -9,8 +9,10 @@
 //!
 //! Convention A : seuls les symboles FX sont chargés (pas de bouts).
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
+use crate::quote::Quote;
 use crate::universe::{pair_nodes, CURR, FX};
 
 /// Sentinelle « jamais vu » (`-inf` du POC : `-1e18`).
@@ -49,6 +51,55 @@ pub fn median(v: &mut [f64]) -> f64 {
     }
 }
 
+/// f64 ordonné pour les tas (NaN traité égal — les spreads sont finis en pratique).
+#[derive(Clone, Copy, PartialEq)]
+struct OrdF64(f64);
+impl Eq for OrdF64 {}
+impl PartialOrd for OrdF64 {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl Ord for OrdF64 {
+    fn cmp(&self, o: &Self) -> Ordering {
+        self.0.partial_cmp(&o.0).unwrap_or(Ordering::Equal)
+    }
+}
+
+/// Médiane incrémentale exacte (deux tas) — même sémantique que [`median`].
+/// Maintient `med` à jour en ingestion live sans recalcul O(n log n) par tick.
+#[derive(Default)]
+pub struct SpreadMedian {
+    lo: BinaryHeap<OrdF64>,                    // max-heap : moitié basse
+    hi: BinaryHeap<std::cmp::Reverse<OrdF64>>, // min-heap : moitié haute
+}
+impl SpreadMedian {
+    fn push(&mut self, x: f64) {
+        if self.lo.peek().is_none_or(|m| x <= m.0) {
+            self.lo.push(OrdF64(x));
+        } else {
+            self.hi.push(std::cmp::Reverse(OrdF64(x)));
+        }
+        if self.lo.len() > self.hi.len() + 1 {
+            let v = self.lo.pop().unwrap();
+            self.hi.push(std::cmp::Reverse(v));
+        } else if self.hi.len() > self.lo.len() {
+            let std::cmp::Reverse(v) = self.hi.pop().unwrap();
+            self.lo.push(v);
+        }
+    }
+    fn median(&self) -> f64 {
+        if self.lo.is_empty() {
+            return f64::NAN;
+        }
+        if self.lo.len() > self.hi.len() {
+            self.lo.peek().unwrap().0
+        } else {
+            0.5 * (self.lo.peek().unwrap().0 + self.hi.peek().unwrap().0 .0)
+        }
+    }
+}
+
 /// État de marché : séries + curseurs rembobinables + quotes courantes.
 pub struct Engine {
     /// Symboles chargés, triés (`slist` du POC).
@@ -70,6 +121,8 @@ pub struct Engine {
     pub fx_si: [Option<usize>; 28],
     /// Paire USD utilisée par `usd_price` : (série, direct = cUSD vs USDc).
     up_pair: [Option<(usize, bool)>; 8],
+    /// Accumulateurs de spread pour la médiane incrémentale (ingestion live).
+    med_acc: Vec<SpreadMedian>,
     /// Événements FX triés `(ts, si)` pour le scan événementiel.
     pub ev: Vec<(i64, usize)>,
 }
@@ -77,22 +130,44 @@ pub struct Engine {
 impl Engine {
     /// Construit l'état à partir de séries chargées (déjà triées par ts).
     /// Les séries vides sont écartées (comme `load_sym -> None` du POC).
-    pub fn new(mut series: Vec<SymbolSeries>) -> Self {
-        series.retain(|s| !s.ts.is_empty());
+    pub fn new(series: Vec<SymbolSeries>) -> Self {
+        Self::build(series, true)
+    }
+
+    /// Moteur « live » : les 28 slots FX existent même sans historique —
+    /// les ticks arrivent par [`Engine::ingest`].
+    pub fn live() -> Self {
+        let series = FX
+            .iter()
+            .map(|&sym| SymbolSeries {
+                sym,
+                ts: Vec::new(),
+                bid: Vec::new(),
+                ask: Vec::new(),
+                vol: Vec::new(),
+            })
+            .collect();
+        Self::build(series, false)
+    }
+
+    fn build(mut series: Vec<SymbolSeries>, drop_empty: bool) -> Self {
+        if drop_empty {
+            series.retain(|s| !s.ts.is_empty());
+        }
         series.sort_by(|a, b| a.sym.cmp(b.sym));
         let n = series.len();
         let mut sidx = HashMap::with_capacity(n);
         let mut med = Vec::with_capacity(n);
+        let mut med_acc = Vec::with_capacity(n);
         let mut is_fx = Vec::with_capacity(n);
         for (i, s) in series.iter().enumerate() {
             sidx.insert(s.sym, i);
-            let mut spreads: Vec<f64> =
-                s.ask.iter().zip(s.bid.iter()).map(|(a, b)| a - b).collect();
-            med.push(if spreads.is_empty() {
-                f64::NAN
-            } else {
-                median(&mut spreads)
-            });
+            let mut acc = SpreadMedian::default();
+            for (a, b) in s.ask.iter().zip(s.bid.iter()) {
+                acc.push(a - b);
+            }
+            med.push(acc.median());
+            med_acc.push(acc);
             is_fx.push(FX.contains(&s.sym));
         }
         let mut fx_si = [None; 28];
@@ -129,6 +204,7 @@ impl Engine {
             ask: vec![f64::NAN; n],
             last_t: vec![NO_TICK; n],
             med,
+            med_acc,
             is_fx,
             fx_si,
             up_pair,
@@ -157,6 +233,41 @@ impl Engine {
     pub fn tick(&mut self, si: usize, t: i64) {
         let j = self.advance(si, t);
         self.publish(si, j, t);
+    }
+
+    /// Ingestion live (Strategy / alimentation temps réel) : ajoute le tick
+    /// à la série `si`, met à jour la médiane incrémentale du spread et
+    /// publie l'état — jamais de quote future.
+    ///
+    /// Précondition : flux par instrument non décroissant en `ts_ms`. Un
+    /// `ts_ms` égal au dernier **remplace** la quote (ré-émission même
+    /// instant — la médiane n'est pas re-poussée pour ne pas la doubler).
+    pub fn ingest(&mut self, si: usize, q: Quote) {
+        {
+            let s = &mut self.data[si];
+            if s.ts.last() == Some(&q.ts_ms) {
+                let n = s.ts.len() - 1;
+                s.bid[n] = q.bid;
+                s.ask[n] = q.ask;
+                s.vol[n] = q.vol;
+            } else {
+                debug_assert!(
+                    s.ts.last().is_none_or(|&last| q.ts_ms > last),
+                    "tick hors ordre si={si} ts={} > last={:?} attendu",
+                    q.ts_ms,
+                    s.ts.last()
+                );
+                s.ts.push(q.ts_ms);
+                s.bid.push(q.bid);
+                s.ask.push(q.ask);
+                s.vol.push(q.vol);
+                self.med_acc[si].push(q.ask - q.bid);
+                self.med[si] = self.med_acc[si].median();
+            }
+        }
+        let j = self.data[si].ts.len() as i64 - 1;
+        self.pos[si] = j;
+        self.publish(si, j, q.ts_ms);
     }
 
     /// Publie l'état à l'instant t pour tous les symboles (forward-fill).
@@ -358,6 +469,52 @@ mod tests {
         // et le parcours tick() ne saute jamais dans le futur
         e.sync(1_000);
         assert!(e.last_t.iter().all(|&lt| lt <= 1_000));
+    }
+
+    /// ingest : publie sans curseur, médiane incrémentale = médiane exacte,
+    /// ts égal remplace la quote sans re-pousser le spread.
+    #[test]
+    fn ingest_live_updates_state_and_median() {
+        let mut e = Engine::live();
+        let si = e.sidx["EURUSD"];
+        e.ingest(
+            si,
+            Quote {
+                ts_ms: 1_000,
+                bid: 1.10,
+                ask: 1.102,
+                vol: 1.0,
+            },
+        );
+        assert_eq!(e.last_t[si], 1_000);
+        assert!((e.med[si] - 0.002).abs() < 1e-12);
+        // spreads 0.002, 0.004, 0.003 -> médiane 0.003
+        for (t, a) in [(2_000i64, 1.104f64), (3_000, 1.103)] {
+            e.ingest(
+                si,
+                Quote {
+                    ts_ms: t,
+                    bid: 1.10,
+                    ask: a,
+                    vol: 1.0,
+                },
+            );
+        }
+        assert!((e.med[si] - 0.003).abs() < 1e-12);
+        // ts égal : remplacement, pas de double comptage dans la médiane
+        e.ingest(
+            si,
+            Quote {
+                ts_ms: 3_000,
+                bid: 1.10,
+                ask: 1.10,
+                vol: 1.0,
+            },
+        );
+        assert_eq!(e.last_t[si], 3_000);
+        assert_eq!(e.ask[si], 1.10);
+        assert_eq!(e.data[si].len(), 3);
+        assert!((e.med[si] - 0.003).abs() < 1e-12);
     }
 
     /// usd_price : mid direct (EURUSD) et inverse (USDJPY), ok mask respecté.

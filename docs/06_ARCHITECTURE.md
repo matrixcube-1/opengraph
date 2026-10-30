@@ -63,6 +63,15 @@ verrou 2 072, pas-de-futur (T1), rembobinage (T4), fraîcheur bilatérale
 `examples/parity.rs`) : même fixture CSV → nets identiques à la précision
 f64 sur tous les points d'évaluation, execs identiques (une différence de
 1,5×10⁻¹¹ sur un pnl — contraction FMA du compilateur, immatérielle).
+Revérifiée **à travers le binding pyo3** (`audit/parity_binding.py`,
+module `opengraph` construit `--release` via maturin) : même résultat,
+`rel_tol = 1e-9`.
+
+⚠️ **Base de temps des harnais** : le loader Rust et `epoch_ms` parlent
+UTC civil ; `time.mktime` donne la base *locale* de la machine (−1 h ici,
+selon fuseau/DST). Tout script alimentant le moteur Rust/binding doit
+calculer ses epochs en UTC (`calendar.timegm` ou équivalent) — sinon les
+evals voient un état décalé d'une heure sans erreur explicite.
 
 ## 3. Spécification manquante assumée — garde volume
 
@@ -144,6 +153,10 @@ pour le rapport PoC.
 [4] Strategy NautilusTrader ...... EN COURS — ordre à ts égal vérifié
                                   (NT 1.220.0 : stable ts_init, suit
                                   l'ordre d'ajout des données = table FX)
+                                  + binding pyo3 validé : un appel/tick
+                                  (on_tick ingère+évalue, signal ou None),
+                                  GIL relâché, parité f64 re-vérifiée
+                                  à travers le module --release
 [5] Backtest interne ............. à faire
 [6] Gates latence/perf ........... bloquants
 [7] Holdout jour 26 .............. UNIQUE, sur pile NT finale

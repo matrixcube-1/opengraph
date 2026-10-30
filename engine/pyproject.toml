@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "opengraph"
+description = "Moteur d'arbitrage FX a chemins ouverts — Convention A, univers FX pur (Annexe J)."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+[tool.maturin]
+features = ["python"]

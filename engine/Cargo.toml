@@ -9,5 +9,10 @@ publish = false
 [lib]
 name = "opengraph"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+python = ["dep:pyo3"]
 
 [dependencies]
+pyo3 = { version = "0.24", features = ["extension-module"], optional = true }

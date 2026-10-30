@@ -20,6 +20,8 @@ pub mod eval;
 pub mod exec;
 pub mod fees;
 pub mod paths;
+#[cfg(feature = "python")]
+pub mod pybind;
 pub mod quote;
 pub mod scan;
 pub mod universe;

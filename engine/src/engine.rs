@@ -241,7 +241,9 @@ impl Engine {
     ///
     /// Précondition : flux par instrument non décroissant en `ts_ms`. Un
     /// `ts_ms` égal au dernier **remplace** la quote (ré-émission même
-    /// instant — la médiane n'est pas re-poussée pour ne pas la doubler).
+    /// instant) ; le spread est poussé dans la médiane à **chaque** tick
+    /// reçu — miroir exact du préchargé, où les deux entrées à ts égal
+    /// existent toutes les deux dans la série.
     pub fn ingest(&mut self, si: usize, q: Quote) {
         {
             let s = &mut self.data[si];
@@ -261,10 +263,10 @@ impl Engine {
                 s.bid.push(q.bid);
                 s.ask.push(q.ask);
                 s.vol.push(q.vol);
-                self.med_acc[si].push(q.ask - q.bid);
-                self.med[si] = self.med_acc[si].median();
             }
         }
+        self.med_acc[si].push(q.ask - q.bid);
+        self.med[si] = self.med_acc[si].median();
         let j = self.data[si].ts.len() as i64 - 1;
         self.pos[si] = j;
         self.publish(si, j, q.ts_ms);
@@ -501,7 +503,9 @@ mod tests {
             );
         }
         assert!((e.med[si] - 0.003).abs() < 1e-12);
-        // ts égal : remplacement, pas de double comptage dans la médiane
+        // ts égal : la quote est remplacée MAIS le spread du tick reçu
+        // compte dans la médiane (miroir du préchargé où les deux entrées
+        // existent) -> spreads [0.002, 0.004, 0.003, 0.0] -> 0.0025
         e.ingest(
             si,
             Quote {
@@ -514,7 +518,7 @@ mod tests {
         assert_eq!(e.last_t[si], 3_000);
         assert_eq!(e.ask[si], 1.10);
         assert_eq!(e.data[si].len(), 3);
-        assert!((e.med[si] - 0.003).abs() < 1e-12);
+        assert!((e.med[si] - 0.0025).abs() < 1e-12);
     }
 
     /// usd_price : mid direct (EURUSD) et inverse (USDJPY), ok mask respecté.

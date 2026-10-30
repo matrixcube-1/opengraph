@@ -71,7 +71,16 @@ module `opengraph` construit `--release` via maturin) : même résultat,
 UTC civil ; `time.mktime` donne la base *locale* de la machine (−1 h ici,
 selon fuseau/DST). Tout script alimentant le moteur Rust/binding doit
 calculer ses epochs en UTC (`calendar.timegm` ou équivalent) — sinon les
-evals voient un état décalé d'une heure sans erreur explicite.
+evals voient un état décalé d'une heure sans erreur explicite. **Exception
+par design** : `on_tick` de la Strategy prend `tick.ts_event // 1_000_000`
+(ns→ms direct de Nautilus) — aucun epoch n'est recalculé.
+
+**Ticks à ts égal — deux sémantiques vérifiées** : (a) chaque tick reçu
+déclenche une évaluation (`on_tick` par tick), comme le scan POC qui itère
+par événement et non par timestamp distinct — le nombre de signaux sera
+comparé tel quel sur cand.npz ; (b) la médiane de spread ingérée compte
+chaque tick reçu, miroir exact du préchargé où les entrées à ts égal
+existent toutes dans la série.
 
 ## 3. Spécification manquante assumée — garde volume
 

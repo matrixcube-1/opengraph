@@ -78,6 +78,11 @@ impl PyEngine {
     /// Un tick entrant côté Strategy : ingère la quote de l'arête FX `e`
     /// (0..28, ordre table Annexe J), publie l'état et évalue les chemins.
     /// Retourne `(path_idx, net_usd, ddd_usd)` ou `None`.
+    ///
+    /// `t` = `tick.ts_event // 1_000_000` — Nautilus ns → ms par troncature,
+    /// **sans recalcul d'epoch** (le piège fuseau ne peut pas revenir).
+    /// Évalue après chaque tick reçu : même sémantique que le scan POC
+    /// (un événement par tick, y compris les doublons à ts égal).
     #[allow(clippy::too_many_arguments)]
     fn on_tick(
         &mut self,

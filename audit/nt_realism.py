@@ -101,6 +101,12 @@ ap.add_argument("--hq-sp", type=float, default=0.1,
 ap.add_argument("--kq", type=float, default=0.5,
                 help="impact : frac consommee do L1 * kq spreads")
 ap.add_argument("--step", type=int, default=20)
+ap.add_argument("--days", type=str, default=None,
+                help="sous-ensemble de DAYS, csv — filtre ticks ET candidats")
+ap.add_argument("--perf", action="store_true",
+                help="mesures ns (calc/e2e) + RSS")
+ap.add_argument("--gcfreeze", action="store_true",
+                help="gc.freeze() apres chargement des ticks")
 ap.add_argument("--out", type=str, default=None)
 args = ap.parse_args()
 OUT = Path(args.out) if args.out else POC / f"nt_{args.mode}_{args.lat_ms:g}.json"
@@ -114,6 +120,16 @@ class CandRealism(Strategy):
             self.subscribe_quote_ticks(iid)
 
     def on_quote_tick(self, tick: QuoteTick):
+        if self.perf:
+            self._tick_ns = time.perf_counter_ns()
+            if self.n_ticks % 200_000 == 0:
+                with open("/proc/self/status") as f:
+                    for ln in f:
+                        if ln.startswith("VmRSS"):
+                            self.rss.append(
+                                (tick.ts_event // 1_000_000,
+                                 int(ln.split()[1]) // 1024))
+                            break
         self.n_ticks += 1
         t_ms = tick.ts_event // 1_000_000
         while self.ic < len(self.cand_t) and self.cand_t[self.ic] <= t_ms:
@@ -123,8 +139,11 @@ class CandRealism(Strategy):
     def _process(self, t):
         if t < self.t_free or self.in_flight:     # verrou cooldown
             return
+        _c0 = time.perf_counter_ns() if self.perf else 0
         ev = self.og.eval_at(t, P["fresh_ms"], P["spread_cap"],
                              P["comm_scale"])
+        if self.perf:
+            self.calc_ns.append(time.perf_counter_ns() - _c0)
         if ev is None:
             self.out.append({"t": t, "none": True})
             return
@@ -160,8 +179,11 @@ class CandRealism(Strategy):
     # ---- mode internal : reference exec_seq ----
 
     def _exec_internal(self, t, pi):
+        _c0 = time.perf_counter_ns() if self.perf else 0
         r = self.og.exec_seq(t, pi, self.lat_ms, P["tau_slip_bp"],
                              P["q_min"], self.vol_guard)
+        if self.perf:
+            self.exec_ns.append(time.perf_counter_ns() - _c0)
         if r is None:
             self.out.append({"exec": {"t": t, "lat": self.lat_ms,
                                       "res": None}})
@@ -219,6 +241,9 @@ class CandRealism(Strategy):
         self.pending[str(o.client_order_id)] = (
             s["li"], float(qty), d, s["acc"], disp, spr)
         self.submit_order(o)
+        if self.perf and s["li"] == 0 and self._tick_ns:
+            # e2e : arrivee du tick declencheur -> retour de submit_order
+            self.e2e_ns.append(time.perf_counter_ns() - self._tick_ns)
 
     def on_order_filled(self, event):
         oid = str(event.client_order_id)
@@ -341,6 +366,7 @@ class CandRealism(Strategy):
         self.seq = None
 
     def on_stop(self):
+        self._tick_ns = 0                        # execs residuels : pas d'e2e
         while self.ic < len(self.cand_t):
             self._process(int(self.cand_t[self.ic]))
             self.ic += 1
@@ -391,9 +417,17 @@ def load_ticks(instr, sym):
 
 def main():
     t0 = time.time()
+    if args.days:                              # sous-fenetre : ticks + cands
+        DAYS[:] = args.days.split(",")
+        lo = timegm(strptime(DAYS[0], "%Y-%m-%d")) * 1000
+        hi = timegm(strptime(DAYS[-1], "%Y-%m-%d")) * 1000 + 86_400_000
+    else:
+        lo, hi = None, None
     z = np.load(POC / "cand.npz")
     cands = z["cands"]
     assert np.all(np.diff(cands[:, 0]) >= 0), "cand.npz non chronologique"
+    if lo is not None:
+        cands = cands[(cands[:, 0] >= lo) & (cands[:, 0] < hi)]
 
     paths, _ = poc_engine.enum_paths()
     idx = set(range(0, len(cands), args.step))
@@ -439,6 +473,9 @@ def main():
     strat.in_flight, strat.seq = False, None
     strat.pending, strat.pxacc, strat.legmap = {}, {}, {}
     strat.venue = {}
+    strat.perf = args.perf
+    strat.calc_ns, strat.exec_ns, strat.e2e_ns = [], [], []
+    strat.rss, strat._tick_ns = [], 0
 
     for s in FX:                          # ordre table FX — contrat d'ordre
         instr = TestInstrumentProvider.default_fx_ccy(
@@ -452,6 +489,11 @@ def main():
         del ticks
 
     engine.add_strategy(strat)
+    if args.gcfreeze:
+        import gc
+        gc.collect()
+        gc.freeze()                  # heap de ticks -> generation permanente
+        print("gc.freeze() applique", flush=True)
     print(f"chargement+run... ({time.time()-t0:.0f}s ecoulees)", flush=True)
     engine.run()
 
@@ -473,10 +515,31 @@ def main():
         "mode": args.mode, "lat_ms": args.lat_ms,
         "vol_guard": args.vol_guard, "step": args.step,
         "queue": args.queue, "hq_sp": args.hq_sp, "kq": args.kq,
+        "days": DAYS, "gcfreeze": args.gcfreeze,
         "resid_usd_end": resid_usd, "resid_usd_t0": resid_t0_sum,
         "resid_drift": resid_usd - resid_t0_sum, "n_resid": n_resid,
         "venue": strat.venue,
     }
+    if args.perf:
+        def pc(v):                             # percentiles ns -> us
+            if not v:
+                return {}
+            a = np.sort(np.asarray(v, dtype=np.float64)) / 1e3
+            n = len(a)
+            return {"n": n, "p50_us": float(a[int(0.50 * (n - 1))]),
+                    "p95_us": float(a[int(0.95 * (n - 1))]),
+                    "p99_us": float(a[int(0.99 * (n - 1))]),
+                    "max_us": float(a[-1])}
+        summary["perf"] = {
+            "calc": pc(strat.calc_ns),         # eval_at seul
+            "exec": pc(strat.exec_ns),         # exec_seq (internal)
+            "e2e": pc(strat.e2e_ns),           # tick -> submit leg 0 (real)
+            "rss_mb": {"samples": len(strat.rss),
+                       "first": strat.rss[0][1] if strat.rss else None,
+                       "last": strat.rss[-1][1] if strat.rss else None,
+                       "max": max((r[1] for r in strat.rss), default=None),
+                       "series": strat.rss[::20]},
+        }
     OUT.write_text(json.dumps({"evals": strat.out,
                                "summary": summary}, indent=0))
     el = time.time() - t0
@@ -484,6 +547,15 @@ def main():
     nev = len(strat.out) - nex
     print(f"-> {OUT} : {nev} evals + {nex} execs | {strat.n_ticks:,} ticks "
           f"en {el:.0f}s = {strat.n_ticks/max(el,1):,.0f} ticks/s")
+    if args.perf:
+        pf = summary["perf"]
+        for k in ("calc", "exec", "e2e"):
+            if pf.get(k):
+                print(f"   {k:4s} p99={pf[k]['p99_us']:.0f}us "
+                      f"max={pf[k]['max_us']:.0f}us (n={pf[k]['n']})")
+        r = pf["rss_mb"]
+        print(f"   RSS {r['first']} -> {r['last']} MB (max {r['max']}) "
+              f"sur {r['samples']} echantillons | gc.freeze={args.gcfreeze}")
     print(f"   residuel {n_resid} seq : {resid_t0_sum:+,.2f} USD @t0 -> "
           f"{resid_usd:+,.2f} USD @fin (drift {resid_usd-resid_t0_sum:+,.2f}) "
           f"| venue: {strat.venue.get('n_positions_open', '-')} pos, "

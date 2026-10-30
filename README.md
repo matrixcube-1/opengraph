@@ -5,6 +5,10 @@ Méthodologie validée en backtest sur ticks réels Dukascopy · Convention A ·
 univers FX pur (8 devises, 28 paires).
 
 > Dépôt privé — propriété exclusive. Voir `NOTICE`.
+>
+> **Documentation complète : [`docs/`](docs/00_INDEX.md)** — stratégie et
+> formules, pipeline données, modèle d'exécution, calibration, résultats,
+> architecture.
 
 ---
 
@@ -36,6 +40,8 @@ recalculé par jambe)
 Port Rust (`engine/`) → Strategy NautilusTrader → adapter cTrader
 ```
 
+Détail couche par couche : [`docs/06_ARCHITECTURE.md`](docs/06_ARCHITECTURE.md).
+
 Décisions structurantes :
 
 - **Chemins ouverts uniquement** — jamais de triangles/cycles fermés (zone
@@ -52,6 +58,7 @@ Décisions structurantes :
 
 | Chemin | Rôle |
 |---|---|
+| `docs/` | **Documentation de référence** : stratégie + formules, données, exécution, calibration, résultats, architecture |
 | `audit/` | POC Python complet : moteur (`poc_engine.py`), calibrage (`poc_optuna.py`), tests de régression (`test_r7.py`), rapports (`RAPPORT_INSAMPLE.md`, `CORRECTIONS_LOG.md`, `REVUE_CRITIQUE.md`, `POC_PIPELINE.md`, `AUDIT_OPERATIONNEL.md`) |
 | `MC/` | Documents canoniques : `document_scelle.txt`, `constitution_unifiee.txt`, inventaire Optuna |
 | `Broker/` | Spécifications produit IC Markets (PDS Forex/Indices/Commodities/CFD) |

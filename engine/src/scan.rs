@@ -15,6 +15,8 @@ use crate::exec::ExecOutcome;
 use crate::paths::PathTables;
 
 /// Paramètres calibrables — le jeu complet du POC Optuna.
+/// `vol_guard` : drapeau hors-POC — garde volume top-of-book dans
+/// `exec_seq` (false = parité stricte POC ; true = spec Rust production).
 #[derive(Clone, Copy, Debug)]
 pub struct Params {
     pub fresh_ms: f64,
@@ -25,9 +27,11 @@ pub struct Params {
     pub tau_slip_bp: f64,
     pub q_min: f64,
     pub cooldown_s: f64,
+    pub vol_guard: bool,
 }
 
 /// Défauts du document (`DOC_DEFAULTS` du POC — baseline enqueued).
+/// `vol_guard = false` : parité stricte avec le POC Python.
 pub const DOC_DEFAULTS: Params = Params {
     fresh_ms: 500.0,
     spread_cap: 1.7,
@@ -37,6 +41,7 @@ pub const DOC_DEFAULTS: Params = Params {
     tau_slip_bp: 0.8,
     q_min: 0.5,
     cooldown_s: 0.0,
+    vol_guard: false,
 };
 
 /// Candidat de détection : `(t, chemin, net, ddd)`.
@@ -159,8 +164,13 @@ impl Engine {
             let Some(ev) = ev.filter(|e| e.net_usd >= p.ddd_min) else {
                 continue;
             };
-            let Some(r) = self.exec_seq(c.t_ms, ev.path_idx, p.lat_ms, p.tau_slip_bp, p.q_min, pt)
-            else {
+            let ep = crate::exec::ExecParams {
+                lat_ms: p.lat_ms,
+                tau_slip_bp: p.tau_slip_bp,
+                q_min: p.q_min,
+                vol_guard: p.vol_guard,
+            };
+            let Some(r) = self.exec_seq(c.t_ms, ev.path_idx, &ep, pt) else {
                 continue;
             };
             if let ExecOutcome::Abort { .. } = r {

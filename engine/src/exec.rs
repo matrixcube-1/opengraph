@@ -32,6 +32,20 @@ use crate::engine::Engine;
 use crate::fees::{ABORT_COST_PER_LEG_USD, COMM_PER_SIDE_USD, NOTIONAL_USD};
 use crate::paths::PathTables;
 
+/// Paramètres d'une séquence d'exécution.
+#[derive(Clone, Copy, Debug)]
+pub struct ExecParams {
+    /// Latence par jambe (ms, flottant — le POC utilise des lat non entières).
+    pub lat_ms: f64,
+    /// Mouvement de prix toléré entre envoi et fill, en bp.
+    pub tau_slip_bp: f64,
+    /// Fraction minimale de fill acceptée (rejet en dessous).
+    pub q_min: f64,
+    /// Garde volume top-of-book — `false` : parité stricte POC ;
+    /// `true` : spécification Rust (production).
+    pub vol_guard: bool,
+}
+
 /// Issue d'une séquence d'exécution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExecOutcome {
@@ -80,9 +94,7 @@ impl Engine {
         &mut self,
         t0: i64,
         pi: usize,
-        lat_ms: f64,
-        tau_slip_bp: f64,
-        q_min: f64,
+        ep: &ExecParams,
         pt: &PathTables,
     ) -> Option<ExecOutcome> {
         let legs = &pt.paths[pi];
@@ -105,7 +117,7 @@ impl Engine {
         let mut filled = 0u8;
         let mut parts = 0u8;
         let mut node = start;
-        let slip = tau_slip_bp * 1e-4;
+        let slip = ep.tau_slip_bp * 1e-4;
 
         macro_rules! abort {
             ($why:expr) => {
@@ -123,7 +135,7 @@ impl Engine {
             let si = self.fx_si[e as usize].expect("filtré ci-dessus");
             let (a, b) = Self::edge_nodes(e);
             let d: i8 = if node == a as usize { 1 } else { -1 };
-            let t_f = t + lat_ms;
+            let t_f = t + ep.lat_ms;
 
             let q_send = match self.quote_at_f(si, t) {
                 Some((_, bid, ask, _)) => {
@@ -150,16 +162,18 @@ impl Engine {
             let mut frac: f64 = if mv <= slip { 1.0 } else { 0.6 };
 
             // garde volume top-of-book (spécifiée ici ; absente du POC Python)
-            let vol_base = vol_f * 1e6;
-            let need_base = if d == 1 { qty } else { qty * q_now };
-            let frac_vol = if vol_base.is_finite() && vol_base > 0.0 && need_base > 0.0 {
-                (vol_base / need_base).min(1.0)
-            } else {
-                0.0
-            };
-            frac = frac.min(frac_vol);
+            if ep.vol_guard {
+                let vol_base = vol_f * 1e6;
+                let need_base = if d == 1 { qty } else { qty * q_now };
+                let frac_vol = if vol_base.is_finite() && vol_base > 0.0 && need_base > 0.0 {
+                    (vol_base / need_base).min(1.0)
+                } else {
+                    0.0
+                };
+                frac = frac.min(frac_vol);
+            }
 
-            if frac < q_min {
+            if frac < ep.q_min {
                 abort!(AbortReason::BelowQMin);
             }
             if frac < 1.0 {
@@ -198,6 +212,13 @@ mod tests {
     use crate::engine::SymbolSeries;
     use crate::paths::build_tables;
     use crate::universe::{ci, FX};
+
+    const EP: ExecParams = ExecParams {
+        lat_ms: 2.5,
+        tau_slip_bp: 0.8,
+        q_min: 0.5,
+        vol_guard: true,
+    };
 
     /// Livre avec CADJPY distordu ; ticks répétés pour simuler le passage
     /// du temps entre envoi (t) et fill (t + lat).
@@ -261,7 +282,7 @@ mod tests {
             0.65,
             0.60,
         ];
-        let r = e.exec_seq(1_000, pi, 2.5, 0.8, 0.5, &pt).expect("exec");
+        let r = e.exec_seq(1_000, pi, &EP, &pt).expect("exec");
         let ExecOutcome::Done {
             pnl_usd,
             dur_ms,
@@ -295,7 +316,7 @@ mod tests {
         let mut e = Engine::new(series);
         let pt = build_tables();
         let pi = path_jpy_cad(&pt);
-        let r = e.exec_seq(1_000, pi, 2.5, 0.8, 0.5, &pt).unwrap();
+        let r = e.exec_seq(1_000, pi, &EP, &pt).unwrap();
         let ExecOutcome::Abort {
             reason,
             pnl_usd,
@@ -330,7 +351,7 @@ mod tests {
         let mut e = Engine::new(series);
         let pt = build_tables();
         let pi = path_jpy_cad(&pt);
-        let r = e.exec_seq(1_000, pi, 2.5, 0.8, 0.5, &pt).unwrap();
+        let r = e.exec_seq(1_000, pi, &EP, &pt).unwrap();
         assert_eq!(
             r,
             ExecOutcome::Abort {
@@ -355,7 +376,7 @@ mod tests {
         let mut e = Engine::new(series);
         let pt = build_tables();
         let pi = path_jpy_cad(&pt);
-        let r = e.exec_seq(1_000, pi, 2.5, 0.8, 0.5, &pt).unwrap();
+        let r = e.exec_seq(1_000, pi, &EP, &pt).unwrap();
         let ExecOutcome::Abort { reason, .. } = r else {
             panic!("attendu Abort (liquidite insuffisante)");
         };
@@ -375,7 +396,7 @@ mod tests {
         let mut e = Engine::new(series);
         let pt = build_tables();
         let pi = path_jpy_cad(&pt);
-        let r = e.exec_seq(1_000, pi, 2.5, 0.8, 0.5, &pt).unwrap();
+        let r = e.exec_seq(1_000, pi, &EP, &pt).unwrap();
         let ExecOutcome::Done {
             partial_legs,
             filled_legs,

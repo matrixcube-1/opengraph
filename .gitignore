@@ -24,3 +24,5 @@ target/
 # Fixtures de parite regenerables (gen_fixture.py)
 fixture_ticks/
 parity_ref.json
+
+rust_out.json

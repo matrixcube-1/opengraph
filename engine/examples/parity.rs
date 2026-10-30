@@ -1,12 +1,15 @@
 //! Parité Python↔Rust : rejoue les mêmes points d'évaluation que
-//! `audit/parity_ref.py` sur le même fixture CSV et imprime un JSON
-//! comparable (pi mappé via (legs,start), l'énumération Rust n'a pas les
-//! variantes bouts intercalées du POC).
+//! `audit/parity_ref.py` sur le même fixture CSV et émet un JSON
+//! comparable (`audit/parity_cmp.py` applique la tolérance rel 1e-9).
 //!
-//! Usage: cargo run --example parity -- <fixture_dir> <day1> <day2>
+//! Le `pi` global diffère : l'énumération Rust n'intercale pas les
+//! variantes bouts du POC — la correspondance se fait via (legs, start).
+//!
+//! Usage: cargo run --example parity -- <fixture_dir> > rust_out.json
+//!        python audit/parity_cmp.py parity_ref.json rust_out.json
 
 use opengraph::data::{epoch_ms, load_fx_engine};
-use opengraph::exec::ExecOutcome;
+use opengraph::exec::{AbortReason, ExecOutcome};
 use opengraph::paths::build_tables;
 use opengraph::universe::{CURR, FX};
 
@@ -26,28 +29,35 @@ fn main() {
         e1 + 7 * 3_600_000 + 90_000,
     ];
 
-    println!("{{\"evals\": [");
-    for (k, &t) in tests_t.iter().enumerate() {
+    let mut items: Vec<String> = Vec::new();
+    for &t in &tests_t {
         eng.sync(t);
         match eng.eval_at(t, 500.0, 1.7, 1.0, &pt) {
-            None => println!("  {{\"t\": {t}, \"none\": true}}"),
+            None => items.push(format!("{{\"t\": {t}, \"none\": true}}")),
             Some(r) => {
                 let legs: Vec<String> = pt.paths[r.path_idx]
                     .iter()
                     .map(|&e| format!("\"{}\"", FX[e as usize]))
                     .collect();
-                println!(
-                    "  {{\"t\": {t}, \"net\": {}, \"ddd\": {}, \"legs\": [{}], \"start\": \"{}\"}}",
+                items.push(format!(
+                    "{{\"t\": {t}, \"net\": {}, \"ddd\": {}, \"legs\": [{}], \"start\": \"{}\"}}",
                     r.net_usd,
                     r.ddd_usd,
                     legs.join(","),
                     CURR[pt.p_s[r.path_idx] as usize],
-                );
+                ));
                 for lat in [1.3, 2.5, 5.0] {
-                    match eng.exec_seq(t, r.path_idx, lat, 0.8, 0.5, &pt) {
-                        None => println!(
-                            "  ,{{\"exec\": {{\"t\": {t}, \"lat\": {lat}, \"res\": null}}}}"
-                        ),
+                    // vol_guard=false : parité stricte avec le POC Python
+                    let ep = opengraph::exec::ExecParams {
+                        lat_ms: lat,
+                        tau_slip_bp: 0.8,
+                        q_min: 0.5,
+                        vol_guard: false,
+                    };
+                    match eng.exec_seq(t, r.path_idx, &ep, &pt) {
+                        None => items.push(format!(
+                            "{{\"exec\": {{\"t\": {t}, \"lat\": {lat}, \"res\": null}}}}"
+                        )),
                         Some(o) => {
                             let (res, pnl, fills, parts, dur) = match o {
                                 ExecOutcome::Done {
@@ -55,7 +65,13 @@ fn main() {
                                     filled_legs,
                                     partial_legs,
                                     dur_ms,
-                                } => ("done", pnl_usd, filled_legs, partial_legs, dur_ms),
+                                } => (
+                                    "done".to_string(),
+                                    pnl_usd,
+                                    filled_legs,
+                                    partial_legs,
+                                    dur_ms,
+                                ),
                                 ExecOutcome::Abort {
                                     reason,
                                     pnl_usd,
@@ -63,26 +79,28 @@ fn main() {
                                     partial_legs,
                                     dur_ms,
                                 } => (
-                                    match reason {
-                                        opengraph::exec::AbortReason::NoQuote => "abort:no quote",
-                                        opengraph::exec::AbortReason::KillIoc => "abort:kill IOC",
-                                        opengraph::exec::AbortReason::BelowQMin => "abort:q<q_min",
-                                    },
+                                    format!(
+                                        "abort:{}",
+                                        match reason {
+                                            AbortReason::NoQuote => "no quote",
+                                            AbortReason::KillIoc => "kill IOC",
+                                            AbortReason::BelowQMin => "q<q_min",
+                                        }
+                                    ),
                                     pnl_usd,
                                     filled_legs,
                                     partial_legs,
                                     dur_ms,
                                 ),
                             };
-                            println!(
-                                "  ,{{\"exec\": {{\"t\": {t}, \"lat\": {lat}, \"res\": \"{res}\", \"pnl\": {pnl}, \"fills\": {fills}, \"parts\": {parts}, \"dur\": {dur}}}}}"
-                            );
+                            items.push(format!(
+                                "{{\"exec\": {{\"t\": {t}, \"lat\": {lat}, \"res\": \"{res}\", \"pnl\": {pnl}, \"fills\": {fills}, \"parts\": {parts}, \"dur\": {dur}}}}}"
+                            ));
                         }
                     }
                 }
             }
         }
-        let _ = k;
     }
-    println!("]}}");
+    println!("{{\"evals\": [\n{}\n]}}", items.join(",\n"));
 }

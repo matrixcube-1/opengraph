@@ -79,7 +79,34 @@ avec la conversion d'unités par classe (FX : millions de base ; CFD :
 contrats × multiplicateur — à définir par `BOUTS`). Point bloquant avant
 toute évaluation CFD ; bénin sur FX à 100 K$ mais **testé quand même**.
 
-## 4. Gates de performance bloquants (runbook §5-6)
+## 4. Décisions de parité étapes 4-5 (avant comparaison cand.npz)
+
+Trois points tranchés avant de rejouer les candidats entre les deux moteurs
+— sinon on chasse un faux écart :
+
+1. **Mode de backtest déterministe d'abord.** NautilusTrader rejoue en
+   événementiel : l'ordre des ticks à timestamp égal entre paires et la
+   latence simulée peuvent diverger de `exec_seq`. On fige un mode
+   **latence nulle + fill déterministe** pour la parité ; le réalisme
+   (latence, files d'attente) est testé dans un second temps.
+2. **Deux réserves du rapport in-sample résolues.**
+   - Le `replay` Python ré-évalue l'univers complet après `IDX_FX`
+     (2ᵉ `eval_at` incluant les bouts). Sous Convention A c'est un no-op
+     vérifié (0 argmax bout / 1 029 811) — le `replay` Rust n'énumère que
+     des chemins FX, donc FX-pur par construction. Pas de divergence
+     attendue ; si une apparaît, c'est elle qu'il faut investiguer.
+   - Le snapshot `up[]` au candidat médian suppose `cands` trié par date :
+     vrai par construction (le scan append dans l'ordre des événements).
+     À re-vérifier à l'import de `cand.npz`, pas un bug à chasser.
+3. **Drapeau `vol_guard`** (`ExecParams.vol_guard` / `Params.vol_guard`) :
+   `false` = parité stricte POC (fills non plafonnés) ; `true` = spec Rust
+   production. Les comparaisons cand.npz tournent avec `false`.
+
+Plus : comparaison systématique à tolérance explicite `rel_tol = 1e-9`
+(`audit/parity_cmp.py`) — les contractions FMA varient selon la cible de
+compilation ; une égalité stricte casserait sans raison.
+
+## 5. Gates de performance bloquants (runbook §5-6)
 
 | Gate | Seuil | Mesure |
 |---|---|---|
@@ -91,14 +118,15 @@ toute évaluation CFD ; bénin sur FX à 100 K$ mais **testé quand même**.
 Tout manqué = retour conception, pas d'assouplissement. Traces archivées
 pour le rapport PoC.
 
-## 5. Séquence runbook (état)
+## 6. Séquence runbook (état)
 
 ```
 [1] Object Storage Vultr ......... décalé (snapshot « Opengrah » tient lieu
                                   de backup ; bucket requis pour artefacts
                                   d'audit + dataset 20 mois)
 [2] GitHub + squelette Rust ...... FAIT — push initial, enum_paths verrou
-[3] Cœur FX Rust Convention A .... à faire (port eval/exec + tests)
+[3] Cœur FX Rust Convention A .... FAIT — port complet + 22 tests +
+                                  parité f64 vs POC (1,5e-11 max, FMA)
 [4] Strategy NautilusTrader ...... à faire
 [5] Backtest interne ............. à faire
 [6] Gates latence/perf ........... bloquants
@@ -107,7 +135,7 @@ pour le rapport PoC.
 [9] Adapter cTrader + push final . après validation
 ```
 
-## 6. Invariants non négociables (audit trail)
+## 7. Invariants non négociables (audit trail)
 
 1. **Jamais de quote future** — `last_t ≤ t` vérifiable à chaque lecture.
 2. **Fraîcheur bilatérale** — `t − last_t ≤ fresh_ms` ET pas de futur.

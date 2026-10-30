@@ -211,9 +211,9 @@ class CandRealism(Strategy):
             instrument_id=iid, order_side=side, quantity=qty,
             price=instr.make_price(px), time_in_force=TimeInForce.IOC)
         # palier D : contexte de file capture au send — taille affichee L1
-        # (en unites, = vol*1e6) et spread relatif ; le fill effectif est
-        # degrade en _resolve_leg selon la fraction consommee.
-        disp = (float(q.bid_size) if d == 1 else float(q.ask_size)) * 1e6
+        # (JA em unites — load_ticks alimenta vol*1e6) et spread relatif ;
+        # le fill effectif est degrade en _resolve_leg selon la fraction.
+        disp = float(q.bid_size) if d == 1 else float(q.ask_size)
         mid = (ask + bid) / 2.0
         spr = (ask - bid) / mid if mid > 0 else 0.0
         self.pending[str(o.client_order_id)] = (

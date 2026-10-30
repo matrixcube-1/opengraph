@@ -178,6 +178,23 @@ impl PyEngine {
         py.detach(move || eng.start_qty(t0, pi, pt))
     }
 
+    /// Nœud terminal du chemin `pi` (devise du résiduel des chemins
+    /// aboutis — positions ouvertes à marquer en fin de run).
+    fn end_node(&self, pi: usize) -> usize {
+        self.pt.p_end[pi] as usize
+    }
+
+    /// Prix USD mid des 8 devises à `t` (sync interne) — marquage des
+    /// positions résiduelles ouvertes à l'horizon de fin de run.
+    fn usd_marks(&mut self, py: Python<'_>, t: i64) -> Vec<f64> {
+        let eng = &mut self.eng;
+        py.detach(move || {
+            eng.sync(t);
+            let ok = vec![true; eng.data.len()];
+            eng.usd_price(&ok).to_vec()
+        })
+    }
+
     /// Bouclage d'une séquence exécutée par la venue (ordres IOC réels) —
     /// même arithmétique qu'`exec_seq` appliquée aux fills constatés.
     ///
@@ -188,7 +205,10 @@ impl PyEngine {
     ///
     /// `aborted` → `pnl = -12*filled + cash - comm` (la jambe avortée ne
     /// contribue rien — conservatisme identique à `exec_seq`).
-    /// Retourne `(pnl_usd, filled_legs, partial_legs)` ou None.
+    /// Retourne `(pnl_usd, filled_legs, partial_legs, resid_usd)` où
+    /// `resid_usd` = position restante marquée `up[node]` à `t0` —
+    /// position finale (`done`) ou résiduel abandonné (`abort`), pour le
+    /// marquage à l'horizon de fin de run.
     fn exec_settle(
         &mut self,
         py: Python<'_>,
@@ -196,7 +216,7 @@ impl PyEngine {
         pi: usize,
         fills: Vec<(f64, f64)>,
         aborted: bool,
-    ) -> Option<(f64, u8, u8)> {
+    ) -> Option<(f64, u8, u8, f64)> {
         let eng = &mut self.eng;
         let pt = &self.pt;
         py.detach(move || eng.exec_settle(t0, pi, &fills, aborted, pt))

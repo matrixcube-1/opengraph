@@ -235,8 +235,12 @@ impl Engine {
     /// la jambe avortée ne contribue rien (conservatisme POC, identique à
     /// `exec_seq` : ni comm ni produit de la jambe fautive).
     ///
-    /// Retourne `(pnl_usd, filled_legs, partial_legs)` ou None si la
-    /// marque USD de départ est indisponible.
+    /// Retourne `(pnl_usd, filled_legs, partial_legs, resid_usd)` où
+    /// `resid_usd` = valeur de la position restante marquée à `up[node]`
+    /// (état à `t0`) : pour `done` c'est la position finale incluse dans
+    /// le pnl ; pour `abort` c'est le résiduel abandonné que le proxy
+    /// `-12$/jambe` remplace — permet de mesurer l'écart proxy↔réel à
+    /// l'horizon de fin de run. None si la marque de départ manque.
     pub fn exec_settle(
         &mut self,
         t0: i64,
@@ -244,7 +248,7 @@ impl Engine {
         fills: &[(f64, f64)],
         aborted: bool,
         pt: &PathTables,
-    ) -> Option<(f64, u8, u8)> {
+    ) -> Option<(f64, u8, u8, f64)> {
         let legs = &pt.paths[pi];
         for &e in legs {
             self.fx_si[e as usize]?;
@@ -284,12 +288,13 @@ impl Engine {
             };
         }
 
+        let resid_usd = qty * up[node];
         let pnl = if aborted {
             -(ABORT_COST_PER_LEG_USD * filled as f64) + cash - comm
         } else {
-            qty * up[node] + cash - NOTIONAL_USD - comm
+            resid_usd + cash - NOTIONAL_USD - comm
         };
-        Some((pnl, filled, parts))
+        Some((pnl, filled, parts, resid_usd))
     }
 }
 
@@ -531,7 +536,8 @@ mod tests {
             fills.push((1.0, px));
             node = if node == a { b } else { a };
         }
-        let (pnl_s, filled_s, parts_s) = e.exec_settle(1_000, pi, &fills, false, &pt).unwrap();
+        let (pnl_s, filled_s, parts_s, _resid_s) =
+            e.exec_settle(1_000, pi, &fills, false, &pt).unwrap();
         let ExecOutcome::Done {
             pnl_usd,
             filled_legs,
@@ -556,20 +562,22 @@ mod tests {
         let mut e = Engine::new(book_distorted());
         let pt = build_tables();
         let pi = path_jpy_cad(&pt); // 1 jambe JPY->CAD, filled=0
-        let (pnl, filled, parts) = e.exec_settle(1_000, pi, &[], true, &pt).unwrap();
+        let (pnl, filled, parts, _resid) = e.exec_settle(1_000, pi, &[], true, &pt).unwrap();
         assert_eq!((pnl, filled, parts), (0.0, 0, 0)); // -12*0+0-0
 
         // même jambe mais remplie puis abort « impossible » : pour un
         // chemin à 1 jambe filled=1 -> -12 + 0 - comm (d=-1 -> px_node 1/ask)
         let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
         let (_, _, ask, _) = e.quote_at_f(si, 1_000.0).unwrap();
-        let (pnl2, filled2, _) = e
+        let (pnl2, filled2, _, resid2) = e
             .exec_settle(1_000, pi, &[(1.0, 1.0 / ask)], true, &pt)
             .unwrap();
         assert_eq!(filled2, 1);
         let up_cad = 1.0 / 1.35; // up[CAD] du fixture (ups[5])
         let comm = crate::fees::COMM_PER_SIDE_USD / up_cad;
         assert!((pnl2 - (-12.0 - comm)).abs() < 1e-9);
+        // resid_usd = position abandonnée marquée up[CAD] : 15M JPY -> CAD
+        assert!((resid2 - 15e6 / ask * up_cad).abs() < 1e-6);
     }
 
     /// Partiel 60 % via settle = même résiduel cash que exec_seq partiel.
@@ -591,11 +599,13 @@ mod tests {
         // fill constaté : frac 0.6 à la quote du fill (tick 1002)
         let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
         let (_, _, ask_f, _) = e.quote_at_f(si, 1_002.0).unwrap();
-        let (pnl_s, _, parts_s) = e
+        let (pnl_s, _, parts_s, residp) = e
             .exec_settle(1_000, pi, &[(0.6, 1.0 / ask_f)], false, &pt)
             .unwrap();
         assert_eq!(parts_s, 1);
         assert!((pnl_s - pnl_usd).abs() / pnl_usd.abs().max(1.0) < 1e-12);
+        // resid_usd = qty_end(=15M*0.6/ask_f) marqué up[CAD]
+        assert!((residp - 15e6 * 0.6 / ask_f * (1.0 / 1.35)).abs() < 1e-6);
     }
 
     /// `start_qty` = NOTIONAL / up[start] — JPY : 100 k x 150.

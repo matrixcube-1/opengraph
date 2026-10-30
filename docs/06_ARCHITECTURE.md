@@ -234,12 +234,34 @@ A priori `hq_sp=0,1` (file invisible), `k_q∈{0,5 ; 1,0}` ; grille 2×3.
 | C 5 ms | int / real | 10 366 / 10 344 | +62 338 / +61 780 | −558 (−0,9 %) |
 | C 20 ms | int / real | 10 323 / 10 315 | +60 859 / +60 428 | −431 (−0,7 %) |
 | C 50 ms | int / real | 10 300 / 10 297 | +59 011 / +58 766 | −245 (−0,4 %) |
-| D grid | voir grille | — | — | en cours |
+
+### Grille D — file/slippage à lat 5 ms (vs real sans fila +61 780)
+
+`px_eff = px·(1−d·h)`, `h = spr·(hq_sp + k_q·min(1, qty/disp))` — paramètres
+en unités de SPREAD, fixés a priori (`hq_sp` = file invisible / sélection
+adverse non observable ; `k_q` = impact par fraction du L1 consommé).
+
+| hq_sp | k_q | Execs | PnL | Δ vs sans fila |
+|---|---|---|---|---|
+| — | — | 10 344 | +61 780 | — |
+| 0,1 | 0 | 10 344 | +50 807 | −17,8 % |
+| 0,1 | 0,5 | 10 344 | +46 807 | −24,2 % |
+| **0,1** | **1,0** | 10 344 | **+42 806** | **−30,7 %** |
+| 0 | 0,5 | 10 443 | +58 366 | −5,5 % |
+| 0 | 1,0 | 11 148 | +58 416 | −5,4 % |
+
+Notes grille : `caps=0` partout (L1 jamais limitant). Configs hq=0 produisent
+des execs en plus (+99/+804) : `frac_eff` gonflé par le coût dégradé des buys
+passe le seuil `q_min` sur des cas limites — et la chaîne `t_free` diverge
+(168 execs à `dur` différente observés — la quantité légèrement changée
+déplace le tick de traitement ; effet d'agenda de 2ᵉ ordre, pas un bug).
 
 Lecture : la latence coûte ~7 % de PnL interne à 50 ms (63 429 → 59 011) ;
 l'écart real-vs-internal se RESSERRE avec la latence (les fills dans la bande
 ±3·tau compensent partiellement) — la décision de colocation dépend surtout
-du coût interne de latence, pas de l'écart venue.
+du coût interne de latence, pas de l'écart venue. **Le modèle de file est le
+réducteur dominant** (−30 % au pire plausible, stratégie toujours bien
+positive) — le chiffre qui comptera au jour 26.
 
 ## 7. Invariants non négociables (audit trail)
 

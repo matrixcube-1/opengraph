@@ -159,18 +159,20 @@ pour le rapport PoC.
 [2] GitHub + squelette Rust ...... FAIT — push initial, enum_paths verrou
 [3] Cœur FX Rust Convention A .... FAIT — port complet + 22 tests +
                                   parité f64 vs POC (1,5e-11 max, FMA)
-[4] Strategy NautilusTrader ...... EN COURS — ordre à ts égal vérifié
-                                  (NT 1.220.0 : stable ts_init, suit
-                                  l'ordre d'ajout des données = table FX)
-                                  + binding pyo3 validé : un appel/tick
-                                  (on_tick ingère+évalue, signal ou None),
-                                  GIL relâché (py.detach), parité f64
-                                  re-vérifiée à travers le module --release
-                                  + PARITÉ cand.npz VALIDÉE serveur :
-                                  51 816 candidats réels, 0 divergence —
-                                  46 731 execs, pnl bit-identique
-                                  (wheel cp314, pyo3 0.28.3, Ubuntu 26.10)
-[5] Backtest interne ............. à faire
+[4] Strategy NautilusTrader ...... FAIT — PARITÉ NT↔POC validée serveur :
+                                  62 145 comparaisons, 0 divergence —
+                                  51 767 evals + 10 378 execs identiques
+                                  (t_free + ddd_min au même endroit que
+                                  replay(), latency_model=None,
+                                  exec_seq interne, vol_guard=false).
+                                  NT 1.230.0 (1.220.0 sans wheel cp314) —
+                                  ordre à ts égal re-vérifié sur 1.230.0.
+                                  57 086 ticks/s mesurés (gate ≥10 k OK).
+                                  Étape 3 confirmée : binding pyo3
+                                  0.28.3, parité cand.npz 51 816/0 div.
+[5] Backtest interne ............. EN COURS — base NT prouvée sur 10,15 M
+                                  ticks réels ; reste mode réalisme
+                                  (ordres IOC réels, latence, files)
 [6] Gates latence/perf ........... bloquants
 [7] Holdout jour 26 .............. UNIQUE, sur pile NT finale
 [8] Rapport PoC FX ............... consolide tout

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Artefacts runtime / données lourdes
+*.npz
+*.db
+*.b64
+live_quotes.json
+nul
+%TEMP%*
+audit/_render/
+audit/__pycache__/
+
+# Références externes non versionnées (code tiers)
+AlgoGraph/*.zip
+
+# Rust
+target/
+**/*.rs.bk

@@ -31,7 +31,15 @@ pub fn enum_paths() -> (Vec<Path>, Vec<u8>) {
     let mut paths: Vec<Path> = Vec::with_capacity(2072);
     let mut starts: Vec<u8> = Vec::with_capacity(2072);
     for s0 in 0..8u8 {
-        dfs(s0, 1u16 << s0, &mut Vec::new(), s0, &adj, &mut paths, &mut starts);
+        dfs(
+            s0,
+            1u16 << s0,
+            &mut Vec::new(),
+            s0,
+            &adj,
+            &mut paths,
+            &mut starts,
+        );
     }
     (paths, starts)
 }

@@ -14,10 +14,10 @@
 //!   arrière (rejouabilité inter-trials, test R7-T6).
 //! - **Univers Annexe J** — 28 paires FX strictes (voir [`universe`]).
 
-pub mod universe;
-pub mod quote;
-pub mod fees;
-pub mod paths;
 pub mod engine;
 pub mod eval;
 pub mod exec;
+pub mod fees;
+pub mod paths;
+pub mod quote;
+pub mod universe;

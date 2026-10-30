@@ -7,15 +7,17 @@ pub const CURR: [&str; 8] = ["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "N
 
 /// Les 28 paires FX (cotation marché base/quote), ordre Annexe J.
 pub const FX: [&str; 28] = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-    "EURGBP", "EURJPY", "EURCHF", "EURAUD", "EURCAD", "EURNZD", "GBPJPY",
-    "GBPCHF", "GBPAUD", "GBPCAD", "GBPNZD", "AUDJPY", "AUDCHF", "AUDCAD",
-    "AUDNZD", "CADJPY", "CADCHF", "CHFJPY", "NZDJPY", "NZDCAD", "NZDCHF",
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "EURJPY",
+    "EURCHF", "EURAUD", "EURCAD", "EURNZD", "GBPJPY", "GBPCHF", "GBPAUD", "GBPCAD", "GBPNZD",
+    "AUDJPY", "AUDCHF", "AUDCAD", "AUDNZD", "CADJPY", "CADCHF", "CHFJPY", "NZDJPY", "NZDCAD",
+    "NZDCHF",
 ];
 
 /// Indice de devise (panique si inconnue — l'univers est fermé).
 pub fn ci(ccy: &str) -> u8 {
-    CURR.iter().position(|&c| c == ccy).expect("devise hors univers") as u8
+    CURR.iter()
+        .position(|&c| c == ccy)
+        .expect("devise hors univers") as u8
 }
 
 /// (base_idx, quote_idx) d'une paire FX par indice de table `FX`.

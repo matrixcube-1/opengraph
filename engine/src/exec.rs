@@ -204,6 +204,93 @@ impl Engine {
             dur_ms: t - t0 as f64,
         })
     }
+
+    /// Quantité de départ en devise `p_s[pi]` à `t0` — `NOTIONAL/up[start]`.
+    /// Même état que `exec_seq` : `sync(t0)` + `usd_price` sur tous les mids.
+    /// Retourne None si la marque n'est pas finie positive (Python : NaN).
+    pub fn start_qty(&mut self, t0: i64, pi: usize, pt: &PathTables) -> Option<f64> {
+        let legs = &pt.paths[pi];
+        for &e in legs {
+            self.fx_si[e as usize]?;
+        }
+        self.sync(t0);
+        let ok_all = vec![true; self.data.len()];
+        let up = self.usd_price(&ok_all);
+        let u = up[pt.p_s[pi] as usize];
+        (u.is_finite() && u > 0.0).then(|| NOTIONAL_USD / u)
+    }
+
+    /// Boucle une séquence exécutée par une venue externe (ordres IOC
+    /// réels NautilusTrader) — **même arithmétique de bouclage** que
+    /// `exec_seq`, appliquée aux fills constatés plutôt qu'au modèle E1-E9.
+    ///
+    /// `fills` = `(frac_eff, px_node)` par jambe **complétée**, dans
+    /// l'ordre du chemin, où :
+    /// - `frac_eff` = fraction de la devise nœud effectivement convertie
+    ///   (d=+1 : `filled_base/order_base` ; d=-1 : `filled_base*px_fill/acc`) ;
+    /// - `px_node` = taux nœud→nœud (`px_fill` si d=+1, `1/px_fill` si d=-1).
+    ///
+    /// `aborted` : la séquence s'est arrêtée avant la dernière jambe
+    /// (kill IOC / q<q_min / no quote) → `pnl = -12*filled + cash - comm`,
+    /// la jambe avortée ne contribue rien (conservatisme POC, identique à
+    /// `exec_seq` : ni comm ni produit de la jambe fautive).
+    ///
+    /// Retourne `(pnl_usd, filled_legs, partial_legs)` ou None si la
+    /// marque USD de départ est indisponible.
+    pub fn exec_settle(
+        &mut self,
+        t0: i64,
+        pi: usize,
+        fills: &[(f64, f64)],
+        aborted: bool,
+        pt: &PathTables,
+    ) -> Option<(f64, u8, u8)> {
+        let legs = &pt.paths[pi];
+        for &e in legs {
+            self.fx_si[e as usize]?;
+        }
+        self.sync(t0);
+        let ok_all = vec![true; self.data.len()];
+        let up = self.usd_price(&ok_all);
+        let mut node = pt.p_s[pi] as usize;
+        if !up[node].is_finite() || up[node] <= 0.0 {
+            return None;
+        }
+        let mut qty = NOTIONAL_USD / up[node];
+        let mut cash = 0.0f64;
+        let mut comm = 0.0f64;
+        let mut filled = 0u8;
+        let mut parts = 0u8;
+
+        for (li, &(frac, px)) in fills.iter().enumerate() {
+            let e = legs[li];
+            let (a, b) = Self::edge_nodes(e);
+            if frac < 1.0 {
+                cash += qty * (1.0 - frac) * up[node];
+                qty *= frac;
+                parts += 1;
+            }
+            qty *= px;
+            comm += if up[a as usize].is_finite() {
+                COMM_PER_SIDE_USD / up[a as usize]
+            } else {
+                COMM_PER_SIDE_USD
+            };
+            filled += 1;
+            node = if node == a as usize {
+                b as usize
+            } else {
+                a as usize
+            };
+        }
+
+        let pnl = if aborted {
+            -(ABORT_COST_PER_LEG_USD * filled as f64) + cash - comm
+        } else {
+            qty * up[node] + cash - NOTIONAL_USD - comm
+        };
+        Some((pnl, filled, parts))
+    }
 }
 
 #[cfg(test)]
@@ -407,5 +494,117 @@ mod tests {
         };
         assert_eq!(filled_legs, 1);
         assert_eq!(partial_legs, 1);
+    }
+
+    // --- exec_settle : bouclage sur fills externes (venue NT) ---
+
+    /// Latence nulle pour les tests settle (fills à la quote de décision).
+    const EP0: ExecParams = ExecParams {
+        lat_ms: 0.0,
+        tau_slip_bp: 0.8,
+        q_min: 0.5,
+        vol_guard: false,
+    };
+
+    /// Premier chemin à `n` jambes (déterministe — ordre de la table).
+    fn path_n_legs(pt: &PathTables, n: u8) -> usize {
+        (0..pt.len()).find(|&pi| pt.p_l[pi] == n).unwrap()
+    }
+
+    /// `exec_settle` sur les fills équivalents (frac=1, px=q_now) doit
+    /// reproduire `exec_seq(lat=0)` à l'arrondi près — même chaîne qty,
+    /// mêmes marquages cash/comm.
+    #[test]
+    fn settle_full_fills_matches_exec_seq_3_legs() {
+        let mut e = Engine::new(book_distorted());
+        let pt = build_tables();
+        let pi = path_n_legs(&pt, 3);
+        // fills externes = fill complet à la quote de t0 (lat=0 : q_now
+        // = quote au temps de décision pour chaque jambe)
+        let mut fills = Vec::new();
+        let mut node = pt.p_s[pi];
+        for &e_i in &pt.paths[pi] {
+            let si = e.fx_si[e_i as usize].unwrap();
+            let (a, b) = Engine::edge_nodes(e_i);
+            let (_, bid, ask, _) = e.quote_at_f(si, 1_000.0).unwrap();
+            let px = if node == a { bid } else { 1.0 / ask };
+            fills.push((1.0, px));
+            node = if node == a { b } else { a };
+        }
+        let (pnl_s, filled_s, parts_s) = e.exec_settle(1_000, pi, &fills, false, &pt).unwrap();
+        let ExecOutcome::Done {
+            pnl_usd,
+            filled_legs,
+            partial_legs,
+            ..
+        } = e.exec_seq(1_000, pi, &EP0, &pt).unwrap()
+        else {
+            panic!("attendu Done");
+        };
+        assert_eq!(filled_s, 3);
+        assert_eq!(parts_s, 0);
+        assert_eq!(filled_legs, 3);
+        assert_eq!(partial_legs, 0);
+        // même ordre d'opérations f64 -> égalité quasi bit à bit
+        assert!((pnl_s - pnl_usd).abs() / pnl_usd.abs().max(1.0) < 1e-12);
+    }
+
+    /// Abort après jambes complétées : pnl = -12*filled + cash - comm —
+    /// recalculé à la main ; la jambe avortée ne contribue rien.
+    #[test]
+    fn settle_abort_matches_hand_computation() {
+        let mut e = Engine::new(book_distorted());
+        let pt = build_tables();
+        let pi = path_jpy_cad(&pt); // 1 jambe JPY->CAD, filled=0
+        let (pnl, filled, parts) = e.exec_settle(1_000, pi, &[], true, &pt).unwrap();
+        assert_eq!((pnl, filled, parts), (0.0, 0, 0)); // -12*0+0-0
+
+        // même jambe mais remplie puis abort « impossible » : pour un
+        // chemin à 1 jambe filled=1 -> -12 + 0 - comm (d=-1 -> px_node 1/ask)
+        let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
+        let (_, _, ask, _) = e.quote_at_f(si, 1_000.0).unwrap();
+        let (pnl2, filled2, _) = e
+            .exec_settle(1_000, pi, &[(1.0, 1.0 / ask)], true, &pt)
+            .unwrap();
+        assert_eq!(filled2, 1);
+        let up_cad = 1.0 / 1.35; // up[CAD] du fixture (ups[5])
+        let comm = crate::fees::COMM_PER_SIDE_USD / up_cad;
+        assert!((pnl2 - (-12.0 - comm)).abs() < 1e-9);
+    }
+
+    /// Partiel 60 % via settle = même résiduel cash que exec_seq partiel.
+    #[test]
+    fn settle_partial_marks_residual_like_exec_seq() {
+        let mut series = book_distorted();
+        for s in &mut series {
+            if s.sym == "CADJPY" {
+                s.ask[1] *= 1.0 + 1.5e-4;
+            }
+        }
+        let mut e = Engine::new(series);
+        let pt = build_tables();
+        let pi = path_jpy_cad(&pt);
+        let ep = ExecParams { lat_ms: 2.5, ..EP0 };
+        let ExecOutcome::Done { pnl_usd, .. } = e.exec_seq(1_000, pi, &ep, &pt).unwrap() else {
+            panic!("attendu Done");
+        };
+        // fill constaté : frac 0.6 à la quote du fill (tick 1002)
+        let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
+        let (_, _, ask_f, _) = e.quote_at_f(si, 1_002.0).unwrap();
+        let (pnl_s, _, parts_s) = e
+            .exec_settle(1_000, pi, &[(0.6, 1.0 / ask_f)], false, &pt)
+            .unwrap();
+        assert_eq!(parts_s, 1);
+        assert!((pnl_s - pnl_usd).abs() / pnl_usd.abs().max(1.0) < 1e-12);
+    }
+
+    /// `start_qty` = NOTIONAL / up[start] — JPY : 100 k x 150.
+    #[test]
+    fn start_qty_uses_usd_mark_at_t0() {
+        let mut e = Engine::new(book_distorted());
+        let pt = build_tables();
+        let pi = path_jpy_cad(&pt);
+        let q = e.start_qty(1_000, pi, &pt).unwrap();
+        assert!((q - 100_000.0 * 150.0).abs() < 1e-6);
     }
 }

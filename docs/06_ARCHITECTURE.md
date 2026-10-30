@@ -165,6 +165,12 @@ pour le rapport PoC.
                                   (t_free + ddd_min au même endroit que
                                   replay(), latency_model=None,
                                   exec_seq interne, vol_guard=false).
+                                  NB population : 46 731 → 10 378 execs
+                                  = verrous t_free + porte ddd_min de
+                                  replay() (les ~36 k candidats à net<0
+                                  du scan généreux sont filtrés) — PAS
+                                  une perte de signaux : même règle des
+                                  deux côtés, comptes identiques.
                                   NT 1.230.0 (1.220.0 sans wheel cp314) —
                                   ordre à ts égal re-vérifié sur 1.230.0.
                                   57 086 ticks/s mesurés (gate ≥10 k OK).

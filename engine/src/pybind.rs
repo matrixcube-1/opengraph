@@ -148,6 +148,60 @@ impl PyEngine {
         })
     }
 
+    /// Description statique des jambes du chemin `pi` :
+    /// `(sym_idx, dir, node_from, base)` par jambe, dans l'ordre de
+    /// propagation du nœud. `dir = +1` → vente de la base au bid ;
+    /// `-1` → achat de la base à `1/ask`. Sert à la Strategy pour
+    /// mapper jambes → instruments/côtés d'ordres réels.
+    fn path_info(&self, pi: usize) -> Vec<(usize, i8, usize, usize)> {
+        let pt = &self.pt;
+        let mut node = pt.p_s[pi];
+        pt.paths[pi]
+            .iter()
+            .enumerate()
+            .map(|(li, &e)| {
+                let d = pt.p_dir[pi][li];
+                let info = (e as usize, d, node as usize, pt.p_base[pi][li] as usize);
+                let (a, b) = crate::universe::pair_nodes(e as usize);
+                node = if d == 1 { b } else { a };
+                info
+            })
+            .collect()
+    }
+
+    /// Quantité de départ `NOTIONAL / up[start]` à `t0` — même état que
+    /// `exec_seq` (sync + mids courants). Retourne None si la marque
+    /// USD de départ n'est pas finie positive.
+    fn start_qty(&mut self, py: Python<'_>, t0: i64, pi: usize) -> Option<f64> {
+        let eng = &mut self.eng;
+        let pt = &self.pt;
+        py.detach(move || eng.start_qty(t0, pi, pt))
+    }
+
+    /// Bouclage d'une séquence exécutée par la venue (ordres IOC réels) —
+    /// même arithmétique qu'`exec_seq` appliquée aux fills constatés.
+    ///
+    /// `fills` = `(frac_eff, px_node)` par jambe complétée :
+    /// - `frac_eff` : fraction de devise nœud convertie — d=+1 :
+    ///   `filled_base/order_base` ; d=-1 : `filled_base*px_fill/acc` ;
+    /// - `px_node` : taux nœud→nœud — `px_fill` si d=+1, `1/px_fill` si d=-1.
+    ///
+    /// `aborted` → `pnl = -12*filled + cash - comm` (la jambe avortée ne
+    /// contribue rien — conservatisme identique à `exec_seq`).
+    /// Retourne `(pnl_usd, filled_legs, partial_legs)` ou None.
+    fn exec_settle(
+        &mut self,
+        py: Python<'_>,
+        t0: i64,
+        pi: usize,
+        fills: Vec<(f64, f64)>,
+        aborted: bool,
+    ) -> Option<(f64, u8, u8)> {
+        let eng = &mut self.eng;
+        let pt = &self.pt;
+        py.detach(move || eng.exec_settle(t0, pi, &fills, aborted, pt))
+    }
+
     /// Exécution déterministe E1-E9 du chemin `pi` détecté à `t0` —
     /// même arithmétique que `exec.rs`.
     /// Retourne `(res, pnl_usd, fills, parts, dur_ms)` ; `res` ∈

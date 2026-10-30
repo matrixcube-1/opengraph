@@ -94,6 +94,12 @@ ap.add_argument("--lat-ms", type=float, default=2.5,
                 help="internal: lat exec_seq par jambe ; real: latence venue")
 ap.add_argument("--vol-guard", action="store_true",
                 help="internal seulement : garde volume top-of-book")
+ap.add_argument("--queue", action="store_true",
+                help="real : modele file/slippage L1 (hq_bp + kq*spr*frac)")
+ap.add_argument("--hq-bp", type=float, default=0.1,
+                help="haircut file invisible par jambe (bp)")
+ap.add_argument("--kq", type=float, default=0.5,
+                help="impact : fraction consommee du L1 * kq spreads")
 ap.add_argument("--step", type=int, default=20)
 ap.add_argument("--out", type=str, default=None)
 args = ap.parse_args()
@@ -188,10 +194,14 @@ class CandRealism(Strategy):
             self._abort("no quote")
             return
         ask, bid = float(q.ask_price), float(q.bid_price)
+        # limite IOC = touche +/- la bande kill d'exec_seq (3*tau_slip) :
+        # une limite a la touche exacte annule sur le moindre mouvement
+        # adverse alors qu'exec_seq tolere jusqu'a 3*tau avant le kill.
+        tol = 3.0 * P["tau_slip_bp"] * 1e-4
         if d == 1:
-            side, px, qty_base = OrderSide.SELL, bid, s["acc"]
+            side, px, qty_base = OrderSide.SELL, bid * (1.0 - tol), s["acc"]
         else:
-            side, px, qty_base = OrderSide.BUY, ask, s["acc"] / ask
+            side, px, qty_base = OrderSide.BUY, ask * (1.0 + tol), s["acc"] / ask
         instr = self.instrs[sym]
         qty = instr.make_qty(qty_base)
         if float(qty) <= 0 or not math.isfinite(px) or px <= 0:
@@ -200,8 +210,14 @@ class CandRealism(Strategy):
         o = self.order_factory.limit(
             instrument_id=iid, order_side=side, quantity=qty,
             price=instr.make_price(px), time_in_force=TimeInForce.IOC)
+        # palier D : contexte de file capture au send — taille affichee L1
+        # (en unites, = vol*1e6) et spread relatif ; le fill effectif est
+        # degrade en _resolve_leg selon la fraction consommee.
+        disp = (float(q.bid_size) if d == 1 else float(q.ask_size)) * 1e6
+        mid = (ask + bid) / 2.0
+        spr = (ask - bid) / mid if mid > 0 else 0.0
         self.pending[str(o.client_order_id)] = (
-            s["li"], float(qty), d, s["acc"])
+            s["li"], float(qty), d, s["acc"], disp, spr)
         self.submit_order(o)
 
     def on_order_filled(self, event):
@@ -227,13 +243,19 @@ class CandRealism(Strategy):
 
     def _resolve_leg(self, oid, ts_event):
         s = self.seq
-        li, oq, d, acc = self.pending.pop(oid)
+        li, oq, d, acc, disp, spr = self.pending.pop(oid)
         s["last_ts"] = ts_event // 1_000_000
         cq, cpx = self.pxacc.pop(oid, (0.0, 0.0))
         if cq <= 0:
             self._abort("kill IOC")               # livre adverse -> pas de fill
             return
         px_fill = cpx / cq                        # VWAP du fill (L1 : 1 px)
+        if self.queue_model and disp > 0:
+            # file/slippage sur L1-only : on ne voit ni la file ni le L2+,
+            # on paie un cout monotone dans la fraction consommee :
+            # h = h_base (file invisible) + k_q * spread_rel * min(1, q/disp)
+            h = self.hq_bp * 1e-4 + self.kq * spr * min(1.0, oq / disp)
+            px_fill *= (1.0 - d * h)              # sell: prix baisse, buy: hausse
         frac_eff = cq / oq if d == 1 else cq * px_fill / acc
         if frac_eff < P["q_min"]:
             self._abort("q<q_min", partial=(d, cq, px_fill))
@@ -408,6 +430,8 @@ def main():
     strat.ic, strat.t_free, strat.n_ticks = 0, -1e18, 0
     strat.mode, strat.lat_ms, strat.vol_guard = (
         args.mode, args.lat_ms, args.vol_guard)
+    strat.queue_model, strat.hq_bp, strat.kq = (
+        args.queue, args.hq_bp, args.kq)
     strat.in_flight, strat.seq = False, None
     strat.pending, strat.pxacc, strat.legmap = {}, {}, {}
     strat.venue = {}
@@ -444,6 +468,7 @@ def main():
     summary = {
         "mode": args.mode, "lat_ms": args.lat_ms,
         "vol_guard": args.vol_guard, "step": args.step,
+        "queue": args.queue, "hq_bp": args.hq_bp, "kq": args.kq,
         "resid_usd_end": resid_usd, "resid_usd_t0": resid_t0_sum,
         "resid_drift": resid_usd - resid_t0_sum, "n_resid": n_resid,
         "venue": strat.venue,

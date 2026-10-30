@@ -23,12 +23,17 @@
 │ EN COURS — engine/ (Rust, cible production)                     │
 │                                                                 │
 │   universe.rs  tables J réelles (28 paires, CURR fidèle)  [réel]│
-│   paths.rs     enum_paths() → 2 072 chemins             [réel]  │
+│   paths.rs     enum_paths() + tables précompilées        [réel] │
 │   quote.rs     Quote {ts_ms, bid, ask, vol}              [réel] │
 │   fees.rs      COMM · NOTIONAL · ABORT_COST             [réel]  │
-│   engine.rs    état rembobinable, jamais de futur        [stub] │
-│   eval.rs      DDD bid/ask + fraîcheur + spread_cap      [stub] │
-│   exec.rs      E1-E9, IOC, partiels, garde volume        [stub] │
+│   engine.rs    état rembobinable, jamais de futur        [réel] │
+│   eval.rs      DDD bid/ask + fraîcheur + spread_cap      [réel] │
+│   exec.rs      E1-E9, IOC, partiels, garde volume        [réel] │
+│   data.rs      loader CSV /opt/arb/data                  [réel] │
+│   scan.rs      scan événementiel + replay (cooldown)     [réel] │
+│                                                                 │
+│   Parité Python↔Rust vérifiée sur fixture : nets identiques     │
+│   à la précision f64 (1 exec à 1,5e-11, contraction FMA).       │
 └─────────────────────────────────────────────────────────────────┘
                                │ cœur de calcul partagé
                                ▼
@@ -46,23 +51,18 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 2. Squelette Rust — ce qui est réel
+## 2. Cœur Rust — porté et vérifié
 
-`enum_paths` est un **port fidèle** du DFS Python : mêmes tables, même
-ordre, même sémantique `p_start`. Le verrou :
+Le cœur de calcul est **porté intégralement** (étape 3) : état de quotes
+rembobinable, `eval_at`, `exec_seq` E1-E9 + garde volume, loader CSV,
+scan événementiel et replay avec cooldown. **22 tests unitaires** :
+verrou 2 072, pas-de-futur (T1), rembobinage (T4), fraîcheur bilatérale
+(T3), rejouabilité inter-trials (T6), portes IOC, partiels, garde volume.
 
-```rust
-#[test]
-fn path_count_is_locked() {
-    assert_eq!(enum_paths().len(), 2072);   // reproduction exacte requise
-}
-```
-
-Les stubs ne sont pas des placeholders vides : chaque `unimplemented!`
-porte le contrat comportemental du POC R7 (rembobinage, `ts[j] ≤ t`,
-fraîcheur bilatérale, portes IOC, marquage résiduel mid). Les tests de
-régression T1-T6 (`audit/test_r7.py`) seront portés en Rust avant toute
-logique nouvelle — même classe de bugs, même garde-fou.
+**Parité Python↔Rust** (`audit/gen_fixture.py` + `parity_ref.py` +
+`examples/parity.rs`) : même fixture CSV → nets identiques à la précision
+f64 sur tous les points d'évaluation, execs identiques (une différence de
+1,5×10⁻¹¹ sur un pnl — contraction FMA du compilateur, immatérielle).
 
 ## 3. Spécification manquante assumée — garde volume
 

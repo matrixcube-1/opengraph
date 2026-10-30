@@ -20,3 +20,7 @@ AlgoGraph/*.zip
 # Rust
 target/
 **/*.rs.bk
+
+# Fixtures de parite regenerables (gen_fixture.py)
+fixture_ticks/
+parity_ref.json

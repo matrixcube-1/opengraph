@@ -21,7 +21,7 @@ univers FX pur (8 devises, 28 paires).
 | Moteur de référence Python (`audit/poc_engine.py`) | R7 — fraîcheur bilatérale, rejouabilité déterministe |
 | Calibrage in-sample (Optuna, 150 trials) | Terminé — marge moy. ~0,6 bp/trade, wr 99,8 %, 4 aborts |
 | Hold-out jour 26 | **Réservé** — évaluation unique sur la pile NautilusTrader |
-| Moteur Rust (`engine/`) | Squelette — runbook étape 2-3 |
+| Moteur Rust (`engine/`) | **Cœur porté** — eval/exec/scan/replay, 22 tests, parité f64 vs POC |
 | Adapter venue cTrader | Non démarré (runbook étape 9) |
 
 ## Architecture

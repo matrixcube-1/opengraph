@@ -95,11 +95,11 @@ ap.add_argument("--lat-ms", type=float, default=2.5,
 ap.add_argument("--vol-guard", action="store_true",
                 help="internal seulement : garde volume top-of-book")
 ap.add_argument("--queue", action="store_true",
-                help="real : modele file/slippage L1 (hq_bp + kq*spr*frac)")
-ap.add_argument("--hq-bp", type=float, default=0.1,
-                help="haircut file invisible par jambe (bp)")
+                help="real : modele file/slippage L1 (spr*(hq_sp + kq*frac))")
+ap.add_argument("--hq-sp", type=float, default=0.1,
+                help="haircut file invisible (fracao do spread)")
 ap.add_argument("--kq", type=float, default=0.5,
-                help="impact : fraction consommee du L1 * kq spreads")
+                help="impact : frac consommee do L1 * kq spreads")
 ap.add_argument("--step", type=int, default=20)
 ap.add_argument("--out", type=str, default=None)
 args = ap.parse_args()
@@ -181,7 +181,7 @@ class CandRealism(Strategy):
                                       "res": None}})
             return
         self.seq = dict(pi=pi, t0=t, legs=self._legs_of(pi), acc=q0,
-                        fills=[], li=0, last_ts=t)
+                        fills=[], li=0, last_ts=t, caps=0)
         self.in_flight = True
         self._submit_leg()
 
@@ -249,12 +249,14 @@ class CandRealism(Strategy):
         if cq <= 0:
             self._abort("kill IOC")               # livre adverse -> pas de fill
             return
+        if cq < oq:
+            s["caps"] += 1                        # fill < qty = cap L1 real
         px_fill = cpx / cq                        # VWAP du fill (L1 : 1 px)
         if self.queue_model and disp > 0:
             # file/slippage sur L1-only : on ne voit ni la file ni le L2+,
-            # on paie un cout monotone dans la fraction consommee :
-            # h = h_base (file invisible) + k_q * spread_rel * min(1, q/disp)
-            h = self.hq_bp * 1e-4 + self.kq * spr * min(1.0, oq / disp)
+            # on paie un cout monotone dans la fraction consommee, en
+            # unites de SPREAD : h = spr*(hq_sp + kq*min(1, q/disp))
+            h = spr * (self.hq_sp + self.kq * min(1.0, oq / disp))
             px_fill *= (1.0 - d * h)              # sell: prix baisse, buy: hausse
         frac_eff = cq / oq if d == 1 else cq * px_fill / acc
         if frac_eff < P["q_min"]:
@@ -310,6 +312,7 @@ class CandRealism(Strategy):
                                       "fills": filled, "parts": parts,
                                       "dur": dur,
                                       "resid_t0": resid_t0,
+                                      "caps": s.get("caps", 0),
                                       "resid": [[s["acc"],
                                                  self.og.end_node(s["pi"])]]}})
         self.t_free = s["t0"] + max(dur, 1) + P["cooldown_s"] * 1000
@@ -330,6 +333,7 @@ class CandRealism(Strategy):
                                       "fills": filled, "parts": parts,
                                       "dur": dur,
                                       "resid_t0": resid_t0,
+                                      "caps": s.get("caps", 0),
                                       "resid": self._resid_pieces(s,
                                                                  partial)}})
         self.t_free = s["t0"] + max(dur, 1) + P["cooldown_s"] * 1000
@@ -430,8 +434,8 @@ def main():
     strat.ic, strat.t_free, strat.n_ticks = 0, -1e18, 0
     strat.mode, strat.lat_ms, strat.vol_guard = (
         args.mode, args.lat_ms, args.vol_guard)
-    strat.queue_model, strat.hq_bp, strat.kq = (
-        args.queue, args.hq_bp, args.kq)
+    strat.queue_model, strat.hq_sp, strat.kq = (
+        args.queue, args.hq_sp, args.kq)
     strat.in_flight, strat.seq = False, None
     strat.pending, strat.pxacc, strat.legmap = {}, {}, {}
     strat.venue = {}
@@ -468,7 +472,7 @@ def main():
     summary = {
         "mode": args.mode, "lat_ms": args.lat_ms,
         "vol_guard": args.vol_guard, "step": args.step,
-        "queue": args.queue, "hq_bp": args.hq_bp, "kq": args.kq,
+        "queue": args.queue, "hq_sp": args.hq_sp, "kq": args.kq,
         "resid_usd_end": resid_usd, "resid_usd_t0": resid_t0_sum,
         "resid_drift": resid_usd - resid_t0_sum, "n_resid": n_resid,
         "venue": strat.venue,

@@ -4,7 +4,7 @@
 //! <root>/<SYM>/<YYYY-MM-DD>/<HH>.csv
 //! header: ms_off,ask,bid,ask_vol,bid_vol
 //! ts_ms = epoch_ms(day) + h*3_600_000 + ms_off   (UTC)
-//! vol   = max(ask_vol, bid_vol)
+//! avol/bvol = volumes por lado
 //! ```
 //!
 //! Les ticks sont triés par ts de façon stable (ordre de lecture conservé
@@ -43,7 +43,8 @@ pub fn load_symbol(root: &Path, sym: &'static str, days: &[&str]) -> Option<Symb
         ts: Vec::new(),
         bid: Vec::new(),
         ask: Vec::new(),
-        vol: Vec::new(),
+        avol: Vec::new(),
+        bvol: Vec::new(),
     };
     for &day in days {
         let t0 = epoch_ms(day);
@@ -72,7 +73,8 @@ pub fn load_symbol(root: &Path, sym: &'static str, days: &[&str]) -> Option<Symb
                 s.ts.push(base + ms);
                 s.ask.push(a);
                 s.bid.push(b);
-                s.vol.push(av.max(bv));
+                s.avol.push(av);
+                s.bvol.push(bv);
             }
         }
     }
@@ -88,7 +90,8 @@ pub fn load_symbol(root: &Path, sym: &'static str, days: &[&str]) -> Option<Symb
         ts: idx.iter().map(|&i| s.ts[i]).collect(),
         bid: take(&s.bid),
         ask: take(&s.ask),
-        vol: take(&s.vol),
+        avol: take(&s.avol),
+        bvol: take(&s.bvol),
     })
 }
 
@@ -136,8 +139,10 @@ mod tests {
         assert_eq!(s.len(), 3);
         assert_eq!(s.ts[0], epoch_ms("2026-10-22"));
         assert_eq!(s.ts[2], epoch_ms("2026-10-22") + 3_600_000 + 100);
-        assert_eq!(s.vol[0], 2.0); // max(2.0, 1.0)
-        assert_eq!(s.vol[1], 3.0); // max(0.5, 3.0)
+        assert_eq!(s.avol[0], 2.0);
+        assert_eq!(s.bvol[0], 1.0);
+        assert_eq!(s.avol[1], 0.5);
+        assert_eq!(s.bvol[1], 3.0);
         assert_eq!(s.ask[2], 1.1010);
         std::fs::remove_dir_all(&dir).ok();
     }

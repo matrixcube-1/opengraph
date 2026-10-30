@@ -138,7 +138,7 @@ impl Engine {
             let t_f = t + ep.lat_ms;
 
             let q_send = match self.quote_at_f(si, t) {
-                Some((_, bid, ask, _)) => {
+                Some((_, bid, ask, _, _)) => {
                     if d == 1 {
                         bid
                     } else {
@@ -147,7 +147,7 @@ impl Engine {
                 }
                 None => f64::NAN,
             };
-            let Some((_, bid_f, ask_f, vol_f)) = self.quote_at_f(si, t_f) else {
+            let Some((_, bid_f, ask_f, avol_f, bvol_f)) = self.quote_at_f(si, t_f) else {
                 abort!(AbortReason::NoQuote);
             };
             if !q_send.is_finite() || q_send <= 0.0 {
@@ -161,9 +161,10 @@ impl Engine {
             }
             let mut frac: f64 = if mv <= slip { 1.0 } else { 0.6 };
 
-            // garde volume top-of-book (spécifiée ici ; absente du POC Python)
+            // garde volume top-of-book — volume do LADO atingido
+            // (sell lê bid_vol, buy lê ask_vol; antes lia max() dos dois)
             if ep.vol_guard {
-                let vol_base = vol_f * 1e6;
+                let vol_base = (if d == 1 { bvol_f } else { avol_f }) * 1e6;
                 let need_base = if d == 1 { qty } else { qty * q_now };
                 let frac_vol = if vol_base.is_finite() && vol_base > 0.0 && need_base > 0.0 {
                     (vol_base / need_base).min(1.0)
@@ -340,7 +341,8 @@ mod tests {
                     ts: vec![1_000, 1_002],
                     bid: vec![mid * 0.9999; 2],
                     ask: vec![mid * 1.0001; 2],
-                    vol: vec![1.0; 2],
+                    avol: vec![1.0; 2],
+                    bvol: vec![1.0; 2],
                 }
             })
             .collect()
@@ -462,7 +464,7 @@ mod tests {
         let mut series = book_distorted();
         for s in &mut series {
             if s.sym == "CADJPY" {
-                s.vol[1] = 0.05; // 50 K CAD affichés < ~74 K requis
+                s.avol[1] = 0.05; // 50 K CAD no ask < ~74 K requis (jambe buy)
             }
         }
         let mut e = Engine::new(series);
@@ -471,6 +473,27 @@ mod tests {
         let r = e.exec_seq(1_000, pi, &EP, &pt).unwrap();
         let ExecOutcome::Abort { reason, .. } = r else {
             panic!("attendu Abort (liquidite insuffisante)");
+        };
+        assert_eq!(reason, AbortReason::BelowQMin);
+    }
+
+    /// Garde volume lê o LADO atingido, não max(avol,bvol): livro com ask
+    /// fino mas bid fundo deve abortar numa jambe buy — com max() passaria.
+    #[test]
+    fn exec_volume_guard_reads_hit_side_not_max() {
+        let mut series = book_distorted();
+        for s in &mut series {
+            if s.sym == "CADJPY" {
+                s.avol[1] = 0.05; // ask fino (lado que a compra atinge)
+                s.bvol[1] = 50.0; // bid fundo — max() esconderia a falta
+            }
+        }
+        let mut e = Engine::new(series);
+        let pt = build_tables();
+        let pi = path_jpy_cad(&pt);
+        let r = e.exec_seq(1_000, pi, &EP, &pt).unwrap();
+        let ExecOutcome::Abort { reason, .. } = r else {
+            panic!("attendu Abort — ask_vol fino deve barrar mesmo com bid_vol fundo");
         };
         assert_eq!(reason, AbortReason::BelowQMin);
     }
@@ -531,7 +554,7 @@ mod tests {
         for &e_i in &pt.paths[pi] {
             let si = e.fx_si[e_i as usize].unwrap();
             let (a, b) = Engine::edge_nodes(e_i);
-            let (_, bid, ask, _) = e.quote_at_f(si, 1_000.0).unwrap();
+            let (_, bid, ask, _, _) = e.quote_at_f(si, 1_000.0).unwrap();
             let px = if node == a { bid } else { 1.0 / ask };
             fills.push((1.0, px));
             node = if node == a { b } else { a };
@@ -568,7 +591,7 @@ mod tests {
         // même jambe mais remplie puis abort « impossible » : pour un
         // chemin à 1 jambe filled=1 -> -12 + 0 - comm (d=-1 -> px_node 1/ask)
         let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
-        let (_, _, ask, _) = e.quote_at_f(si, 1_000.0).unwrap();
+        let (_, _, ask, _, _) = e.quote_at_f(si, 1_000.0).unwrap();
         let (pnl2, filled2, _, resid2) = e
             .exec_settle(1_000, pi, &[(1.0, 1.0 / ask)], true, &pt)
             .unwrap();
@@ -598,7 +621,7 @@ mod tests {
         };
         // fill constaté : frac 0.6 à la quote du fill (tick 1002)
         let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
-        let (_, _, ask_f, _) = e.quote_at_f(si, 1_002.0).unwrap();
+        let (_, _, ask_f, _, _) = e.quote_at_f(si, 1_002.0).unwrap();
         let (pnl_s, _, parts_s, residp) = e
             .exec_settle(1_000, pi, &[(0.6, 1.0 / ask_f)], false, &pt)
             .unwrap();

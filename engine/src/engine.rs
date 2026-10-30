@@ -25,9 +25,11 @@ pub struct SymbolSeries {
     pub ts: Vec<i64>,
     pub bid: Vec<f64>,
     pub ask: Vec<f64>,
-    /// Volume combiné `max(ask_vol, bid_vol)` — convention Dukas (millions
-    /// de devise de base pour FX). Semantique par classe CFD : à spécifier.
-    pub vol: Vec<f64>,
+    /// Volume exibido por lado (milhões de devise de base, Dukas).
+    /// `avol` = lado ask (comprado), `bvol` = lado bid (vendido) — a garde
+    /// volume lê o lado que a ordem atinge; `quote_at` expõe `max(avol,bvol)`.
+    pub avol: Vec<f64>,
+    pub bvol: Vec<f64>,
 }
 
 impl SymbolSeries {
@@ -144,7 +146,8 @@ impl Engine {
                 ts: Vec::new(),
                 bid: Vec::new(),
                 ask: Vec::new(),
-                vol: Vec::new(),
+                avol: Vec::new(),
+                bvol: Vec::new(),
             })
             .collect();
         Self::build(series, false)
@@ -251,7 +254,8 @@ impl Engine {
                 let n = s.ts.len() - 1;
                 s.bid[n] = q.bid;
                 s.ask[n] = q.ask;
-                s.vol[n] = q.vol;
+                s.avol[n] = q.vol;
+                s.bvol[n] = q.vol;
             } else {
                 debug_assert!(
                     s.ts.last().is_none_or(|&last| q.ts_ms > last),
@@ -262,7 +266,8 @@ impl Engine {
                 s.ts.push(q.ts_ms);
                 s.bid.push(q.bid);
                 s.ask.push(q.ask);
-                s.vol.push(q.vol);
+                s.avol.push(q.vol);
+                s.bvol.push(q.vol);
             }
         }
         self.med_acc[si].push(q.ask - q.bid);
@@ -298,17 +303,18 @@ impl Engine {
     /// Retourne `(ts, bid, ask, vol)` ou None si aucun tick <= t.
     pub fn quote_at(&self, si: usize, t: i64) -> Option<(i64, f64, f64, f64)> {
         self.quote_at_f(si, t as f64)
+            .map(|(ts, b, a, av, bv)| (ts, b, a, av.max(bv)))
     }
 
     /// `quote_at` à t flottant (t_fill = t_prev + lat_ms est non entier).
-    pub(crate) fn quote_at_f(&self, si: usize, t: f64) -> Option<(i64, f64, f64, f64)> {
+    pub(crate) fn quote_at_f(&self, si: usize, t: f64) -> Option<(i64, f64, f64, f64, f64)> {
         let s = &self.data[si];
         let j = s.ts.partition_point(|&x| (x as f64) <= t) as i64 - 1;
         if j < 0 {
             None
         } else {
             let j = j as usize;
-            Some((s.ts[j], s.bid[j], s.ask[j], s.vol[j]))
+            Some((s.ts[j], s.bid[j], s.ask[j], s.avol[j], s.bvol[j]))
         }
     }
 
@@ -368,7 +374,8 @@ mod tests {
             ts: ticks.iter().map(|t| t.0).collect(),
             bid: ticks.iter().map(|t| t.1).collect(),
             ask: ticks.iter().map(|t| t.2).collect(),
-            vol: ticks.iter().map(|_| 1.0).collect(),
+            avol: ticks.iter().map(|_| 1.0).collect(),
+            bvol: ticks.iter().map(|_| 1.0).collect(),
         }
     }
 

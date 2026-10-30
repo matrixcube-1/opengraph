@@ -252,7 +252,8 @@ mod tests {
                     ts,
                     bid: bids,
                     ask: asks,
-                    vol: vec![1.0; n_ticks],
+                    avol: vec![1.0; n_ticks],
+                    bvol: vec![1.0; n_ticks],
                 }
             })
             .collect()

@@ -140,7 +140,8 @@ mod tests {
                     ts: vec![1_000],
                     bid: vec![bid],
                     ask: vec![ask],
-                    vol: vec![1.0],
+                    avol: vec![1.0],
+                    bvol: vec![1.0],
                 }
             })
             .collect()
@@ -211,7 +212,8 @@ mod tests {
                 s.ts.clear();
                 s.bid.clear();
                 s.ask.clear();
-                s.vol.clear();
+                s.avol.clear();
+                s.bvol.clear();
             }
         }
         let e = Engine::new(series);
@@ -241,7 +243,8 @@ mod tests {
                 let m = s.bid[0] / (1.0 - 1e-4);
                 s.bid = vec![m * 0.9999, m * 0.9999, m * 0.9999];
                 s.ask = vec![m * 1.0001, m * 1.0001, m * 1.01];
-                s.vol = vec![1.0; 3];
+                s.avol = vec![1.0; 3];
+                s.bvol = vec![1.0; 3];
             }
         }
         let e = Engine::new(series);

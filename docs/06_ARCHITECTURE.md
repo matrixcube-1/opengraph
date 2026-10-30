@@ -176,14 +176,70 @@ pour le rapport PoC.
                                   57 086 ticks/s mesurés (gate ≥10 k OK).
                                   Étape 3 confirmée : binding pyo3
                                   0.28.3, parité cand.npz 51 816/0 div.
-[5] Backtest interne ............. EN COURS — base NT prouvée sur 10,15 M
-                                  ticks réels ; reste mode réalisme
-                                  (ordres IOC réels, latence, files)
+[5] Backtest interne ............. EN COURS — paliers de réalisme, voir §6.1
 [6] Gates latence/perf ........... bloquants
 [7] Holdout jour 26 .............. UNIQUE, sur pile NT finale
 [8] Rapport PoC FX ............... consolide tout
 [9] Adapter cTrader + push final . après validation
 ```
+
+## 6.1 Étape 5 — réalisme en paliers (`audit/nt_realism.py`)
+
+Harnais : même Strategy NT, deux modes — `internal` (référence `exec_seq`,
+zéro venue) et `real` (vrais `LIMIT_IOC` sur la venue `SIM`, bouclage Rust
+`exec_settle` sur les fills réels). Échantillon `step 20 + 3 jambes` =
+51 802 candidats, 3 jours (22, 23, 26 oct. 2026), ~10,4 k exécutions par run.
+Différentiel candidat-par-candidat via `audit/diff_runs.py` — chaque écart
+attribué à UN réglage.
+
+**Sémantique venue mesurée (NT 1.230.0, empirique)**
+- IOC : fill plafonné à la taille affichée L1, reliquat CANCELED
+- `LatencyModel` en **nanosecondes** ; latence quantifiée aux événements :
+  l'ordre est traité au premier tick ≥ t+lat, contre SON livre
+- Fill au prix L1 courant (amélioration de prix possible dans la limite)
+- `exec_settle` Rust boucle les fills réels et rend `(pnl, filled, parts,
+  resid_usd@t0)` ; résiduel marqué fin de run via `usd_marks` — réconcilié
+  au dollar près : `resid_end = resid_t0 + drift`
+
+**Limite IOC = send ± 3·tau_slip** — une limite à la touche annulait sur le
+moindre mouvement adverse (351 kills artificiels à 1 ms). La bande ±3·tau
+(2,4 bp) reproduit la porte kill d'`exec_seq` et le comportement réel d'un
+IOC protégé — après fix : **0 flip à tous les paliers**.
+
+**`parts` ≠ cap L1** : les ~4 000 execs avec `parts>0` sont des jambes buy
+à `frac_eff = cq·px/acc < 1` (arrondi de quantité + amélioration de prix),
+pas des partiels de liquidité — mesuré : **0 cap L1 réel sur 11 520 jambes**
+(le côté affiché ≥ besoin à tous nos timestamps).
+
+**Garde volume lue par côté (fix Rust)** : `vol_guard` lisait `max(av,bv)`
+— sur livre déséquilibré elle regardait le mauvais côté. Corrigé :
+`avol`/`bvol` stockés, la garde lit le côté frappé (TDD :
+`exec_volume_guard_reads_hit_side_not_max`). Effet chiffré sur cette
+population : nul (0 cap même côté-correct) — fix de spec.
+
+**Modèle file/slippage (palier D)** — approx. documentée L1-only : le fill
+reste plafonné au L1 affiché (pas de fill fictif L2) ; le prix effectif est
+dégradé `px_eff = px·(1−d·h)`, `h = spr·(hq_sp + k_q·min(1, qty/disp))` —
+coût monotone dans la fraction du L1 consommée, en unités de spread.
+A priori `hq_sp=0,1` (file invisible), `k_q∈{0,5 ; 1,0}` ; grille 2×3.
+
+### Résultats (population step-20, 51 802 cands)
+
+| Palier | Config | Execs | PnL | Δ vs réf |
+|---|---|---|---|---|
+| R0 réf | internal lat0 | 10 413 | +63 429,17 | — |
+| A IOC | real lat0 | 10 413 | +63 177,09 | −252 (−0,40 %) |
+| B vol_guard | internal vg | 10 413 | +63 429,17 | +0,00 (garde inerte à ~100 k$) |
+| C 1 ms | int / real | 10 400 / 10 362 | +63 121 / +62 298 | −823 (−1,3 %) |
+| C 5 ms | int / real | 10 366 / 10 344 | +62 338 / +61 780 | −558 (−0,9 %) |
+| C 20 ms | int / real | 10 323 / 10 315 | +60 859 / +60 428 | −431 (−0,7 %) |
+| C 50 ms | int / real | 10 300 / 10 297 | +59 011 / +58 766 | −245 (−0,4 %) |
+| D grid | voir grille | — | — | en cours |
+
+Lecture : la latence coûte ~7 % de PnL interne à 50 ms (63 429 → 59 011) ;
+l'écart real-vs-internal se RESSERRE avec la latence (les fills dans la bande
+±3·tau compensent partiellement) — la décision de colocation dépend surtout
+du coût interne de latence, pas de l'écart venue.
 
 ## 7. Invariants non négociables (audit trail)
 

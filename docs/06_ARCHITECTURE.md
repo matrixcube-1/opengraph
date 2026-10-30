@@ -99,11 +99,19 @@ Trois points tranchés avant de rejouer les candidats entre les deux moteurs
    - `cands` trié par date : vrai par construction (le scan append dans
      l'ordre des événements) — désormais **assert à l'import** :
      `np.all(np.diff(ts) >= 0)` dans `load_cands`, échec bloquant.
-   - Ordre à ts égal : verrouillé côté Rust par test dédié — événements
-     triés stable en **ordre de table FX** (pas alphabétique), identique
-     à `np.argsort` stable. NautilusTrader devra reproduire cet ordre
-     (instruments ajoutés dans l'ordre FX + tri ts_init) ou accepter un
-     jitter documenté.
+   - Ordre à ts égal : verrouillé des deux côtés.
+     - Rust : test `ev_order_at_equal_timestamps_follows_fx_table` —
+       événements triés stable en **ordre de table FX** (pas alphabétique),
+       identique à `np.argsort` stable.
+     - NautilusTrader **1.220.0** : vérifié empiriquement
+       (`audit/test_nt_order.py`) — le `BacktestEngine` trie stable par
+       `ts_init` puis **suit l'ordre d'appel à `add_data`**. Ticks à
+       ts identique ajoutés dans l'ordre FX arrivent dans l'ordre FX
+       (EUR/USD→CAD/JPY→NZD/CHF, pas alphabétique) ; à ordre d'ajout
+       inverse, l'ordre observé s'inverse. **Contrat : alimenter les
+       données groupées par instrument dans l'ordre de la table FX.**
+       Caveat : comportement propre à la version épinglée — à re-vérifier
+       à chaque bump de `nautilus_trader`.
 3. **Drapeau `vol_guard`** (`ExecParams.vol_guard` / `Params.vol_guard`) :
    `false` = parité stricte POC (fills non plafonnés) ; `true` = spec Rust
    production. Les comparaisons cand.npz tournent avec `false`.
@@ -133,7 +141,9 @@ pour le rapport PoC.
 [2] GitHub + squelette Rust ...... FAIT — push initial, enum_paths verrou
 [3] Cœur FX Rust Convention A .... FAIT — port complet + 22 tests +
                                   parité f64 vs POC (1,5e-11 max, FMA)
-[4] Strategy NautilusTrader ...... à faire
+[4] Strategy NautilusTrader ...... EN COURS — ordre à ts égal vérifié
+                                  (NT 1.220.0 : stable ts_init, suit
+                                  l'ordre d'ajout des données = table FX)
 [5] Backtest interne ............. à faire
 [6] Gates latence/perf ........... bloquants
 [7] Holdout jour 26 .............. UNIQUE, sur pile NT finale

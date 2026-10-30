@@ -28,3 +28,16 @@ parity_ref.json
 rust_out.json
 rust_out_rel.json
 binding_out.json
+
+# Artefacts build/upload
+dist/
+engine_src*.tgz
+*.whl
+
+# Runs locaux volumineux
+run_*.json
+perf_*.json
+clean_*.json
+check_*.json
+ref_*.json
+fh.b64

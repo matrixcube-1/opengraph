@@ -250,11 +250,12 @@ adverse non observable ; `k_q` = impact par fraction du L1 consommé).
 | 0 | 0,5 | 10 443 | +58 366 | −5,5 % |
 | 0 | 1,0 | 11 148 | +58 416 | −5,4 % |
 
-Notes grille : `caps=0` partout (L1 jamais limitant). Configs hq=0 produisent
-des execs en plus (+99/+804) : `frac_eff` gonflé par le coût dégradé des buys
-passe le seuil `q_min` sur des cas limites — et la chaîne `t_free` diverge
-(168 execs à `dur` différente observés — la quantité légèrement changée
-déplace le tick de traitement ; effet d'agenda de 2ᵉ ordre, pas un bug).
+Notes grille : `caps=0` partout (L1 jamais limitant). Les configs hq=0
+produisaient des execs en plus (+99/+804) — attribués d'abord à un effet
+d'agenda de 2ᵉ ordre, **la vraie cause était la pollution de données décrite
+ci-dessous** (fichiers CSV réécrits pendant les runs). Les comptes d'execs
+des runs du 30/10 ≥13 h sont à traiter comme suspects ; les écarts appariés
+restent valides. Re-validation propre en cours sur données gelées.
 
 Lecture : la latence coûte ~7 % de PnL interne à 50 ms (63 429 → 59 011) ;
 l'écart real-vs-internal se RESSERRE avec la latence (les fills dans la bande
@@ -263,7 +264,46 @@ du coût interne de latence, pas de l'écart venue. **Le modèle de file est le
 réducteur dominant** (−30 % au pire plausible, stratégie toujours bien
 positive) — le chiffre qui comptera au jour 26.
 
-## 7. Invariants non négociables (audit trail)
+### Étape 5.6 — incident de pollution de données (30/10, audit trail)
+
+Un processus `fetch_poc.py` lancé le 27/10 restait actif : coincé dans le
+tarpit WAF, il rebouclait ses repasses et **réécrivait les CSV des 3 jours
+POC** (317 fichiers entre 13 h et ~19 h UTC). Un run lisant un fichier à
+mi-écriture voyait une heure tronquée → état moteur divergent → argmax
+d'eval différent au même `t` (preuve : GBPUSD/−3.73 vs AUDJPY/−2.66 à
+t=1792724877113, comptes de ticks différant de 17 104). Processus tué ;
+200 fichiers sondés sains après stabilisation. Conséquences :
+
+- valides : tous les écarts **appariés** (0 flip, PnL bit-identique), les
+  mesures temporelles (ns), les runs antérieurs au 30/10 13 h ;
+- suspects : exec counts et PnL globaux des runs du 30/10 ≥13 h, incluant
+  les anomalies d'execs de la grille D ;
+- action : re-validation des chiffres clés sur données gelées (ladder7).
+
+**Règle ajoutée** : un seul downloader à la fois — et aucun run d'analyse
+pendant qu'un fetcher écrit dans `/opt/arb/data`.
+
+## 7. Étape 6 — gates de performance (30/10)
+
+Mesures `perf_counter_ns` dans le process (`nt_realism.py --perf`), mode
+real IOC + file (0,1 sp × 1,0 sp) à lat 5 ms, population step-20 :
+
+| Gate | Cible | Mesuré | Statut |
+|---|---|---|---|
+| p99 calcul `eval_at` | < 1 ms | **61-62 µs** (max 352 µs gelé) | ✓ ×16 |
+| p99 calcul `exec_seq` | < 1 ms | **20 µs** | ✓ |
+| p99 e2e tick→`submit_order` | < 5 ms | **536-544 µs** | ✓ ×9 |
+| max e2e | — | 512 ms brut → **1,3 ms avec `gc.freeze()`** | ✓ |
+| débit scan (étape 4) | ≥ 10 k t/s | **57 086 t/s** | ✓ |
+| débit venue+ordres | — | 9,0-9,3 k t/s | info backtest |
+| mémoire (3 j, real) | stable | 3 186 → 3 364 Mo plafonné | ✓ |
+
+`gc.freeze()` après chargement des 10,5 M ticks supprime les pauses GC :
+max e2e 512 ms → 1,3 ms, max calc 21,6 ms → 0,35 ms. La queue RSS (+180 Mo)
+est l'accumulation voulue des positions résiduelles Convention A, pas une
+fuite. À figer en prod : `gc.freeze()` après `add_data`, avant `run()`.
+
+## 8. Invariants non négociables (audit trail)
 
 1. **Jamais de quote future** — `last_t ≤ t` vérifiable à chaque lecture.
 2. **Fraîcheur bilatérale** — `t − last_t ≤ fresh_ms` ET pas de futur.

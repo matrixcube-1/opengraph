@@ -17,12 +17,20 @@ univers FX pur (8 devises, 28 paires).
 | Brique | État |
 |---|---|
 | Méthodologie (document scellé + constitution) | Figée — chemins ouverts exclusivement |
-| Données POC | 28/28 paires FX, ticks ms bid/ask/volume, 3 jours |
+| Données POC | 28/28 paires FX, ticks ms bid/ask/volume, 3 jours (gelées) |
 | Moteur de référence Python (`audit/poc_engine.py`) | R7 — fraîcheur bilatérale, rejouabilité déterministe |
 | Calibrage in-sample (Optuna, 150 trials) | Terminé — marge moy. ~0,6 bp/trade, wr 99,8 %, 4 aborts |
-| Hold-out jour 26 | **Réservé** — évaluation unique sur la pile NautilusTrader |
-| Moteur Rust (`engine/`) | **Cœur porté** — eval/exec/scan/replay, 22 tests, parité f64 vs POC |
+| Moteur Rust (`engine/`) | Porté + binding pyo3 — 29 tests, parité bit-exacte vs POC (51 816 cands, 0 divergence) |
+| Stratégie NautilusTrader 1.230 | **Parité validée** — 62 145 comparaisons identiques au replay direct |
+| Réalisme (étape 5) | Ordres IOC réels, latence 0-50 ms, vol_guard par côté, file L1 — 0 flip ; **pire cas +47 338 $/3 j** |
+| Performance (étape 6) | calc p99 61 µs, e2e p99 536 µs, gc.freeze → max 1,3 ms, 57 k t/s |
+| Hold-out jour non vu | **Téléchargement en cours** (2026-10-27) — test unique lundi, pile NT figée |
 | Adapter venue cTrader | Non démarré (runbook étape 9) |
+
+**Pile serveur** : Ubuntu · Rust 1.99 (rustup `~/.cargo`) · `venv-og` Python
+3.14 — `maturin` build de `engine/` (wheel `opengraph` cp314) +
+`nautilus_trader==1.230.0` + `numpy`. Données `/opt/arb/data/<SYM>/<JOUR>/<HH>.csv`
+(hors dépôt). Repro : `docs/06_ARCHITECTURE.md`.
 
 ## Architecture
 

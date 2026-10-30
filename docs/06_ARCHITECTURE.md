@@ -164,8 +164,12 @@ pour le rapport PoC.
                                   l'ordre d'ajout des données = table FX)
                                   + binding pyo3 validé : un appel/tick
                                   (on_tick ingère+évalue, signal ou None),
-                                  GIL relâché, parité f64 re-vérifiée
-                                  à travers le module --release
+                                  GIL relâché (py.detach), parité f64
+                                  re-vérifiée à travers le module --release
+                                  + PARITÉ cand.npz VALIDÉE serveur :
+                                  51 816 candidats réels, 0 divergence —
+                                  46 731 execs, pnl bit-identique
+                                  (wheel cp314, pyo3 0.28.3, Ubuntu 26.10)
 [5] Backtest interne ............. à faire
 [6] Gates latence/perf ........... bloquants
 [7] Holdout jour 26 .............. UNIQUE, sur pile NT finale

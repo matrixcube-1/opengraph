@@ -6,7 +6,7 @@
 //! - **Un seul franchissement par tick** : `on_tick` ingère la quote, met à
 //!   jour l'état et évalue — il ne renvoie qu'un signal `(pi, net, ddd)`
 //!   ou `None`, jamais l'état interne.
-//! - **GIL relâché** pendant le calcul (`py.allow_threads`) : l'évaluation
+//! - **GIL relâché** pendant le calcul (`py.detach`) : l'évaluation
 //!   des 2 072 chemins ne bloque pas l'interpréteur.
 //! - **Même arithmétique** : le module se construit en `--release` via
 //!   maturin et la parité est revérifiée à travers le binding
@@ -75,6 +75,20 @@ impl PyEngine {
         CURR[self.pt.p_s[pi] as usize].to_string()
     }
 
+    /// Indice du chemin `(legs ordonnées, start)` — utilisé pour mapper les
+    /// `pi` du POC (indexation avec bouts intercalés) vers `path_idx` Rust.
+    /// Retourne None si la combinaison n'existe pas dans l'univers FX.
+    fn path_index(&self, legs: Vec<String>, start: String) -> Option<usize> {
+        let edges: Option<Vec<u8>> = legs
+            .iter()
+            .map(|s| FX.iter().position(|&f| f == s).map(|e| e as u8))
+            .collect();
+        let edges = edges?;
+        let start_i = CURR.iter().position(|&c| c == start)? as u8;
+        (0..self.pt.len())
+            .find(|&pi| self.pt.p_s[pi] == start_i && self.pt.paths[pi][..] == edges[..])
+    }
+
     /// Un tick entrant côté Strategy : ingère la quote de l'arête FX `e`
     /// (0..28, ordre table Annexe J), publie l'état et évalue les chemins.
     /// Retourne `(path_idx, net_usd, ddd_usd)` ou `None`.
@@ -98,7 +112,7 @@ impl PyEngine {
     ) -> Option<(usize, f64, f64)> {
         let eng = &mut self.eng;
         let pt = &self.pt;
-        py.allow_threads(move || {
+        py.detach(move || {
             let si = eng.fx_si[e]?;
             eng.ingest(
                 si,
@@ -127,7 +141,7 @@ impl PyEngine {
     ) -> Option<(usize, f64, f64)> {
         let eng = &mut self.eng;
         let pt = &self.pt;
-        py.allow_threads(move || {
+        py.detach(move || {
             eng.sync(t);
             eng.eval_at(t, fresh_ms, spread_cap, comm_scale, pt)
                 .map(|r| (r.path_idx, r.net_usd, r.ddd_usd))
@@ -151,7 +165,7 @@ impl PyEngine {
     ) -> Option<(String, f64, u8, u8, f64)> {
         let eng = &mut self.eng;
         let pt = &self.pt;
-        py.allow_threads(move || {
+        py.detach(move || {
             let ep = ExecParams {
                 lat_ms,
                 tau_slip_bp,

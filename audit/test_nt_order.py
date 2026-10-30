@@ -101,23 +101,31 @@ def run(order):
     return strat.seen
 
 
-# --- cas 1 : donnees groupees par instrument en ordre table FX ---
-seen = run(["EURUSD", "CADJPY", "NZDCHF"])
-print("ordre ajout FX table -> arrivee:", seen[:6])
-at_same = [s.split(".")[0].replace("/", "") for s in seen[:6]]
-assert at_same == ["EURUSD", "EURUSD", "CADJPY", "CADJPY", "NZDCHF", "NZDCHF"], \
-    f"ordre inattendu: {at_same}"
-print("CAS 1 OK : ordre table FX preserve a ts egal (pas alphabetique)")
+# NT >= 1.230 : le logger Rust ne se reinitialise pas dans le meme
+# processus (panic "set a logger after initialized"). Un cas par
+# processus : `python test_nt_order.py 1` puis `... 2`.
+import sys
+CASE = sys.argv[1] if len(sys.argv) > 1 else "all"
 
-# --- cas 2 : controle negatif — donnees ajoutees NZDCHF d'abord ---
-seen2 = run(["NZDCHF", "EURUSD", "CADJPY"])
-at_same2 = [s.split(".")[0].replace("/", "") for s in seen2[:6]]
-print("ordre ajout inverse -> arrivee:", at_same2)
-if at_same2 == ["NZDCHF", "NZDCHF", "EURUSD", "EURUSD", "CADJPY", "CADJPY"]:
-    print("CAS 2 : l'ordre suit l'ordre d'AJOUT DES DONNEES (stable ts_init)")
-elif at_same2 == ["EURUSD", "EURUSD", "CADJPY", "CADJPY", "NZDCHF", "NZDCHF"]:
-    print("CAS 2 : l'ordre suit l'enregistrement des INSTRUMENTS")
-else:
-    print(f"CAS 2 : ordre autre -> {at_same2} (a documenter)")
+if CASE in ("1", "all"):
+    # --- cas 1 : donnees groupees par instrument en ordre table FX ---
+    seen = run(["EURUSD", "CADJPY", "NZDCHF"])
+    print("ordre ajout FX table -> arrivee:", seen[:6], flush=True)
+    at_same = [s.split(".")[0].replace("/", "") for s in seen[:6]]
+    assert at_same == ["EURUSD", "EURUSD", "CADJPY", "CADJPY", "NZDCHF", "NZDCHF"], \
+        f"ordre inattendu: {at_same}"
+    print("CAS 1 OK : ordre table FX preserve a ts egal (pas alphabetique)", flush=True)
 
-print("TEST NT ORDRE TERMINE")
+if CASE in ("2", "all"):
+    # --- cas 2 : controle negatif — donnees ajoutees NZDCHF d'abord ---
+    seen2 = run(["NZDCHF", "EURUSD", "CADJPY"])
+    at_same2 = [s.split(".")[0].replace("/", "") for s in seen2[:6]]
+    print("ordre ajout inverse -> arrivee:", at_same2, flush=True)
+    if at_same2 == ["NZDCHF", "NZDCHF", "EURUSD", "EURUSD", "CADJPY", "CADJPY"]:
+        print("CAS 2 : l'ordre suit l'ordre d'AJOUT DES DONNEES (stable ts_init)", flush=True)
+    elif at_same2 == ["EURUSD", "EURUSD", "CADJPY", "CADJPY", "NZDCHF", "NZDCHF"]:
+        print("CAS 2 : l'ordre suit l'enregistrement des INSTRUMENTS", flush=True)
+    else:
+        print(f"CAS 2 : ordre autre -> {at_same2} (a documenter)", flush=True)
+
+print("TEST NT ORDRE TERMINE", flush=True)

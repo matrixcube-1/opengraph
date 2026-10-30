@@ -328,6 +328,38 @@ mod tests {
         assert_eq!(e.quote_at(i, 3_500).unwrap().0, 3_000);
     }
 
+    /// Ordre des événements à timestamp égal : tri stable = ordre de la
+    /// table FX (comme np.argsort stable sur concat par paire en ordre FX).
+    /// C'est l'ordre que NautilusTrader doit reproduire (ts_init + ordre
+    /// d'ajout des instruments dans l'ordre FX) — sinon jitter de parité.
+    #[test]
+    fn ev_order_at_equal_timestamps_follows_fx_table() {
+        // NZDCHF = arête 27, EURUSD = arête 0, CADJPY = arête 22
+        // -> à ts égal : EURUSD, puis CADJPY, puis NZDCHF (PAS alphabétique)
+        let mut e = Engine::new(vec![
+            series("NZDCHF", &[(1_000, 0.5, 0.501), (1_000, 0.5, 0.501)]),
+            series("EURUSD", &[(1_000, 1.1, 1.101), (1_000, 1.1, 1.101)]),
+            series("CADJPY", &[(1_000, 110.0, 110.1), (1_000, 110.0, 110.1)]),
+        ]);
+        let at_1000: Vec<usize> =
+            e.ev.iter()
+                .filter(|(t, _)| *t == 1_000)
+                .map(|(_, si)| *si)
+                .collect();
+        let expected = [
+            e.sidx["EURUSD"],
+            e.sidx["EURUSD"],
+            e.sidx["CADJPY"],
+            e.sidx["CADJPY"],
+            e.sidx["NZDCHF"],
+            e.sidx["NZDCHF"],
+        ];
+        assert_eq!(at_1000, expected);
+        // et le parcours tick() ne saute jamais dans le futur
+        e.sync(1_000);
+        assert!(e.last_t.iter().all(|&lt| lt <= 1_000));
+    }
+
     /// usd_price : mid direct (EURUSD) et inverse (USDJPY), ok mask respecté.
     #[test]
     fn usd_price_direct_inverse() {

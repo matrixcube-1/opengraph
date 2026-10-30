@@ -89,15 +89,21 @@ Trois points tranchés avant de rejouer les candidats entre les deux moteurs
    latence simulée peuvent diverger de `exec_seq`. On fige un mode
    **latence nulle + fill déterministe** pour la parité ; le réalisme
    (latence, files d'attente) est testé dans un second temps.
-2. **Deux réserves du rapport in-sample résolues.**
+2. **Deux réserves du rapport in-sample — converties en garanties dures.**
    - Le `replay` Python ré-évalue l'univers complet après `IDX_FX`
      (2ᵉ `eval_at` incluant les bouts). Sous Convention A c'est un no-op
-     vérifié (0 argmax bout / 1 029 811) — le `replay` Rust n'énumère que
-     des chemins FX, donc FX-pur par construction. Pas de divergence
-     attendue ; si une apparaît, c'est elle qu'il faut investiguer.
-   - Le snapshot `up[]` au candidat médian suppose `cands` trié par date :
-     vrai par construction (le scan append dans l'ordre des événements).
-     À re-vérifier à l'import de `cand.npz`, pas un bug à chasser.
+     vérifié (0 argmax bout / 1 029 811) — désormais **assert bloquant**
+     dans `poc_optuna.replay` : `ev2 is None or ev2[0] <= ev[0]`. Si un
+     chemin bout gagne un jour, la Convention A est remise en cause et le
+     replay s'arrête — signal fort, pas divergence silencieuse.
+   - `cands` trié par date : vrai par construction (le scan append dans
+     l'ordre des événements) — désormais **assert à l'import** :
+     `np.all(np.diff(ts) >= 0)` dans `load_cands`, échec bloquant.
+   - Ordre à ts égal : verrouillé côté Rust par test dédié — événements
+     triés stable en **ordre de table FX** (pas alphabétique), identique
+     à `np.argsort` stable. NautilusTrader devra reproduire cet ordre
+     (instruments ajoutés dans l'ordre FX + tri ts_init) ou accepter un
+     jitter documenté.
 3. **Drapeau `vol_guard`** (`ExecParams.vol_guard` / `Params.vol_guard`) :
    `false` = parité stricte POC (fills non plafonnés) ; `true` = spec Rust
    production. Les comparaisons cand.npz tournent avec `false`.

@@ -49,6 +49,10 @@ def day_of(t_ms):
 def load_cands():
     z = np.load(OUT / "cand.npz")
     cands = [tuple(c) for c in z["cands"]]
+    # garantie bloquante : les candidats doivent etre chronologiques —
+    # le « trie par construction » devient un echec, pas un avertissement
+    ts = np.asarray([c[0] for c in cands])
+    assert np.all(np.diff(ts) >= 0), "cand.npz : timestamps non croissants"
     eps = z["episodes"] if "episodes" in z.files else np.empty((0, 4))
     by_day = {d: [] for d in DAYS}
     for c in cands:
@@ -70,9 +74,12 @@ def replay(eng, cands, p):
         ev = eng.eval_at(int(t), p["fresh_ms"], p["spread_cap"], p["comm_scale"],
                          rows=eng.IDX_FX)
         if ev is not None and ev[0] >= p["ddd_min"]:
+            # Convention A : les terminaisons bouts sont mecaniquement
+            # dominees — la 2e eval sur tout l'univers ne doit JAMAIS gagner.
+            # Si elle gagne un jour, la convention est remise en cause.
             ev2 = eng.eval_at(int(t), p["fresh_ms"], p["spread_cap"], p["comm_scale"])
-            if ev2 and ev2[0] > ev[0]:
-                ev = ev2
+            assert ev2 is None or ev2[0] <= ev[0], \
+                "chemin bout argmax — Convention A remise en cause"
         if ev is None or ev[0] < p["ddd_min"]:
             continue
         r = eng.exec_seq(int(t), ev[1], p["lat_ms"], p["tau_slip_bp"], p["q_min"])

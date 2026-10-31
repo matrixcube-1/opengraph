@@ -19,7 +19,6 @@
   serveur, clés ledger retirées, ne pas re-télécharger.
 - Univers scellé d'origine = Annexe J du Document scellé : 28 paires FX (J.2) + 32 bouts (J.3) = 60 instruments.
   Exclus (J.4) : WHEAT, CORN, ES35, CHINA50, XNGUSD, HK50, SA40, paires feuilles, CME.
-- Fenêtre de calibrage : 2025-01-01 → 2026-09-01 exclu (janv. 2025 → août 2026, 20 mois).
 - Conversions J.3 à l'ingestion : SWI20 (CHEIDXCHF) CHF→USD via USDCHF ; *CMDUSX ÷ 100.
 
 ## Orientation stratégique (décision utilisateur)

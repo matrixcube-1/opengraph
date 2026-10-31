@@ -16,7 +16,7 @@ synthétique dans la chaîne. `mc_sim.py` est un artefact antérieur hors pipeli
 ÉTAPE 2  DÉTECTION (backtest) poc_engine.Engine.scan -> cand.npz
 ÉTAPE 3  OPTIMISATION         poc_optuna.py run -> Optuna v5 sur E1-E9
 ÉTAPE 4  VALIDATION           holdout (1 fois) + importance + poc_report
-ÉTAPE 5  SUITE (hors POC)     Hawkes MLE dédié + campagne 20 mois
+ÉTAPE 5  SUITE (hors POC)     Hawkes MLE dédié
 ```
 
 ---
@@ -106,8 +106,8 @@ E1–E9 des candidats réels — détection ré-évaluée sous les params du tri
 | Artefacts | `best_params.json`, `holdout.json`, `cand.npz`, logs |
 
 **Non câblé (justifié)** : multi-objectif NSGA-II/Pareto (mono-obj + contraintes
-suffit au POC), walk-forward multi-folds (impossible sur 3 jours — viendra avec
-les 20 mois), heartbeat/gRPC (mono-process), Hub samplers (TPE = bon choix §17).
+suffit au POC), walk-forward multi-folds (impossible sur 3 jours),
+heartbeat/gRPC (mono-process), Hub samplers (TPE = bon choix §17).
 
 ## ÉTAPE 4 — Validation
 
@@ -118,7 +118,6 @@ les 20 mois), heartbeat/gRPC (mono-process), Hub samplers (TPE = bon choix §17)
 ## ÉTAPE 5 — Suite (hors POC)
 
 - **Hawkes MLE dédié** sur les épisodes `cand.npz` (λ, S(h) — JAMAIS via Optuna)
-- Campagne fenêtre scellée : 2025-01 -> 2026-08, univers 60 complet, walk-forward
 - Multi-objectif Pareto (P&L × drawdown), PartialFixed pour le passage prod
 
 ## Runbook
@@ -136,7 +135,7 @@ python3 poc_report.py
 ## Limites assumées du POC
 
 - 3 jours = **validation mécanique**, pas calibration ni preuve de rentabilité
-- 1 fold train + 1 fold hold-out — le vrai anti-overfitting exige les 20 mois
+- 1 fold train + 1 fold hold-out — anti-overfitting limité par la fenêtre dispo
 - Hawkes non encore implémenté (épisodes exportés, MLE à venir)
 - p_persist non branché au replay (seuil produit complet tranché au doc — la
   calibration S(h)/Ĥ exige la MLE Hawkes d'abord)

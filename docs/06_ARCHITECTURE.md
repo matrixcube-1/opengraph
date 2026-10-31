@@ -38,16 +38,18 @@
                                │ cœur de calcul partagé
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ À FAIRE — intégration production                                │
+│ FAIT — pile NautilusTrader (audit/nt_realism.py)                │
 │                                                                 │
-│   NautilusTrader Strategy (pyo3/natif)                          │
-│     on_quote_tick → sync état → eval DDD → règle d'envoi        │
-│     → ordres IOC séquentiels au venue adapter                    │
+│   CandRealism(Strategy) : on_quote_tick → eval_at → porte ddd    │
+│     → _exec_internal (exec_seq Rust) ou _exec_real (LIMIT_IOC    │
+│     séquentiels, LatencyModel ns, bouclage exec_settle Rust)     │
+│   Paliers mesurés : IOC, latence 0-50 ms, vol_guard, file L1     │
+│   (h = spr·(hq_sp + kq·frac)) — 0 flip apparié ; perf §7         │
 │                                                                 │
-│   cTrader venue adapter (DataClient / ExecutionClient custom)   │
-│     - abonnements ticks 28 paires                                │
-│     - mass status + probes IOC                                   │
-│     - la Strategy ne touche JAMAIS l'API venue                  │
+│   regime_indicators/ : boucle lente T̃/D/c⋆ + porte hystérésis   │
+│     + modulation gπ — publié ArcSwap, en aval de l'oracle        │
+│                                                                 │
+│ À FAIRE — cTrader venue adapter + couche sizing HiGHS           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -310,7 +312,40 @@ fuite. À figer en prod : `gc.freeze()` après `add_data`, avant `run()`.
 3. **Exécution séquentielle** — fills aux vrais ticks ultérieurs, jamais
    atomiques, jamais à la quote de détection.
 4. **Convention A** — résiduels marqués aux prix exécutables.
-5. **Holdout une fois** — jour 26 exposé une seule fois, sur la pile finale.
+5. **Holdout unique** — jour 27/10 : évalué une fois en aveugle
+   (`ddd_min = 0`, −60,65 $), puis une fois en post-hoc documenté
+   (`ddd_min = 2,5`, +11,25 $) — désormais non aveugle pour cette famille.
 6. **Pas de cycle fermé** — chemins ouverts uniquement, `assert` structurel.
 7. **`comm_scale ≥ 1.0`** — jamais sous le taux négocié.
 8. **Un downloader à la fois** — discipline WAF documentée (02_DONNEES.md).
+9. **Indicateurs de régime en aval de l'oracle** — jamais de pruning /
+   réordonnancement des chemins ; fail-closed si données périmées.
+
+## 9. Couche régime + audit du seuil (31/10)
+
+**`regime_indicators/`** — crate sœur (43 tests), boucle lente hors chemin
+critique (~3 µs/pas) : tension multi-sauts T̃ (résidu de Hodge, Ā+A²+A³,
+Frobenius, EWMA+MAD), dominance spectrale D/c⋆, porte à hystérésis
+fail-closed, modulation bornée `g_π`, instantané `ArcSwap`. Formules et
+mesures : [07_REGIME_SEUIL.md](07_REGIME_SEUIL.md).
+
+**Audit du seuil — constat majeur** : ni le replay Python ni `exec_seq`
+interne ne reproduisent les jours perdants (22/10 +1,2 M$ vs venue +48 k$) —
+le saignement vit dans la couche venue (caps L1, haircut de file, IOC au
+tick ≥ t+lat). Le seuil a donc été calibré par **re-sérialisation exacte
+du flux venue** (`poc_thresh_grid.py`, validé au centime sur le baseline) →
+plateau `ddd_min ∈ [2, 4]` → retenu **2,5 $**, `cooldown_s = 0`.
+
+Résultats : in-sample 3 jours tous positifs (+49,6 k$ total vs 47,7 k$) ;
+holdout 27/10 post-hoc **+11,25 $ / 6 execs** vs −60,65 / 134 execs
+(prédiction resim exacte au centime). Détail complet :
+`audit/HOLDOUT_2026-10-27.md` addendum.
+
+## 10. Reste à faire (production)
+
+- Adapter venue cTrader (DataClient/ExecutionClient custom) — étape 9.
+- Couche sizing HiGHS/Kelly/ES — nécessite `μ`/`σ²` par chemin non encore
+  spécifiés ; `g_π` prêt en amont (§7 du doc de conception).
+- Hawkes MLE / `p_persist` — sémantique à finaliser, épisodes exportés.
+- Porte à hystérésis : implémentée, non activée sur le déclenchement
+  (coût d'opportunité mesuré) — disponible en overlay de risque.

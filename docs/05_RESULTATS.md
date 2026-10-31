@@ -116,3 +116,27 @@ partiels marqués, aborts journalisés, réconciliation nulle. Le signal est
 réel et persistant au-delà du budget d'exécution. La question ouverte —
 capacité et robustesse hors échantillon — passe par le runbook
 NautilusTrader, pas par plus de calibration Python.
+
+## 8. Addendum — venue réaliste NautilusTrader (chiffres qui comptent)
+
+Les chiffres ci-dessus sont du modèle rapide `exec_seq` (références de
+palier). Sur la **venue NT complète** (`--mode real`, lat 5 ms, IOC L1,
+haircut de file `h = spr·(0,1 + 1,0·frac)`, `ddd_min = 0` figé) :
+
+| Jour | Execs | PnL | Win rate | $/exec |
+|---|---|---|---|---|
+| 22/10 | 10 010 | +48 392,94 $ | 94,5 % | +4,83 |
+| 23/10 | 1 050 | −627,97 | 27,9 % | −0,60 |
+| 26/10 | 206 | −58,57 | 40,8 % | −0,28 |
+| 27/10 (holdout) | 134 | −60,65 | 34,3 % | −0,45 |
+| **Total** | **11 400** | **+47 646** | | |
+
+Le 22/10 était un jour de choc macro (panique IA, −19 pb sur les yields
+US, pétrole, JPY refuge) : 96 % des execs partaient de CAD
+(`EURCAD`+`CADJPY`+`GBPCAD` = 92 % du PnL). Les jours calmes saignaient
+sur distorsions sous-marginales (net médian 0,69-0,86 $ < friction).
+
+**Sous `ddd_min = 2,5` (balayage flux venue, plateau 2-4 $)** :
+jours in-sample tous positifs (49 179 / +362 / +56) ; holdout post-hoc
++11,25 / 6 execs vs −60,65 / 134. Détail : [07_REGIME_SEUIL.md](07_REGIME_SEUIL.md)
+§5-6 ; relevé complet `audit/statement_flow.pdf` + `statement_trades.csv`.

@@ -20,11 +20,13 @@ univers FX pur (8 devises, 28 paires).
 | Données POC | 28/28 paires FX, ticks ms bid/ask/volume, 3 jours (gelées) |
 | Moteur de référence Python (`audit/poc_engine.py`) | R7 — fraîcheur bilatérale, rejouabilité déterministe |
 | Calibrage in-sample (Optuna, 150 trials) | Terminé — marge moy. ~0,6 bp/trade, wr 99,8 %, 4 aborts |
-| Moteur Rust (`engine/`) | Porté + binding pyo3 — 29 tests, parité bit-exacte vs POC (51 816 cands, 0 divergence) |
+| Moteur Rust (`engine/`) | Porté + binding pyo3 — parité bit-exacte vs POC (51 816 cands, 0 divergence) |
 | Stratégie NautilusTrader 1.230 | **Parité validée** — 62 145 comparaisons identiques au replay direct |
-| Réalisme (étape 5) | Ordres IOC réels, latence 0-50 ms, vol_guard par côté, file L1 — 0 flip ; **pire cas +47 338 $/3 j** |
+| Réalisme (étape 5) | Ordres IOC réels, latence 0-50 ms, vol_guard par côté, file L1 — 0 flip |
 | Performance (étape 6) | calc p99 61 µs, e2e p99 536 µs, gc.freeze → max 1,3 ms, 57 k t/s |
-| Hold-out jour non vu | **Téléchargement en cours** (2026-10-27) — test unique lundi, pile NT figée |
+| Hold-out 27/10 (aveugle, `ddd_min=0`) | **−60,65 $** / 134 execs — jour calme, saignement sous-marginal |
+| **Audit du seuil (31/10)** | Plateau `ddd_min ∈ [2,4]` sur flux venue → **retenu 2,5 $** ; holdout post-hoc **+11,25 $** / 6 execs |
+| Indicateurs de régime (`regime_indicators/`) | Crate sœur testée (43 tests) : T̃, D/c⋆, hystérésis, modulation gπ — télémétrie, en aval de l'oracle |
 | Adapter venue cTrader | Non démarré (runbook étape 9) |
 
 **Pile serveur** : Ubuntu · Rust 1.99 (rustup `~/.cargo`) · `venv-og` Python
@@ -67,10 +69,11 @@ Décisions structurantes :
 | Chemin | Rôle |
 |---|---|
 | `docs/` | **Documentation de référence** : stratégie + formules, données, exécution, calibration, résultats, architecture |
-| `audit/` | POC Python complet : moteur (`poc_engine.py`), calibrage (`poc_optuna.py`), tests de régression (`test_r7.py`), rapports (`RAPPORT_INSAMPLE.md`, `CORRECTIONS_LOG.md`, `REVUE_CRITIQUE.md`, `POC_PIPELINE.md`, `AUDIT_OPERATIONNEL.md`) |
+| `audit/` | POC Python complet : moteur (`poc_engine.py`), calibrage (`poc_optuna.py`, `poc_optuna_pen.py`), pile NT (`nt_realism.py`, `nt_realism_legs.py`), seuil (`poc_thresh_grid.py`), régime (`regime_diag.py`), statement (`gen_statement.py`), tests (`test_r7.py`, `test_pen_objective.py`), rapports (`RAPPORT_INSAMPLE.md`, `HOLDOUT_2026-10-27.md`, `REVUE_CRITIQUE.md`, `POC_PIPELINE.md`, `AUDIT_OPERATIONNEL.md`) |
 | `MC/` | Documents canoniques : `document_scelle.txt`, `constitution_unifiee.txt`, inventaire Optuna |
 | `Broker/` | Spécifications produit IC Markets (PDS Forex/Indices/Commodities/CFD) |
-| `engine/` | Moteur Rust — squelette, cible de production (Convention A) |
+| `engine/` | Moteur Rust `opengraph` — cible de production (Convention A) + binding pyo3 |
+| `regime_indicators/` | Crate sœur — tension T̃, dominance D/c⋆, hystérésis, modulation gπ |
 | `backup_pdf/` | Versions pré-purge des documents canoniques (piste d'audit) |
 | `AGENTS.md` | Notes opérationnelles projet (protocoles, décisions, runbook) |
 
@@ -86,15 +89,27 @@ python3 audit/test_r7.py            # T1-T6 : futur, rembobinage, rejouabilité
 python3 audit/report_insample.py    # -> JSON candidats/épisodes/fills/marges
 ```
 
-## Résultats clés (in-sample, 22+23 oct. 2026)
+## Résultats clés
+
+**Venue NautilusTrader réaliste** (IOC L1, latence 5 ms, file de queue —
+chiffres qui comptent, `docs/05_RESULTATS.md` §8) :
+
+- In-sample 22+23+26 oct. : **+47 706 $** / 11 266 execs (`ddd_min=0`) —
+  le 22/10 (jour de choc) produit +48 393 $, les jours calmes saignent
+- **`ddd_min = 2,5`** : in-sample **+49,6 k$** avec **zéro jour perdant** ;
+  holdout 27/10 post-hoc **+11,25 $** / 6 execs (vs −60,65 $ / 134)
+- Tension T̃ sépare les régimes (médiane 0,53 vs 0,20-0,28) — télémétrie,
+  pas de seuil adaptatif retenu (aucun gain mesurable sur 3 jours)
+
+Modèle rapide `exec_seq` (référence de palier, in-sample 22+23) :
 
 - 186 103 trades simulés · **wr 99,76 %** · 4 aborts (0,002 %) · 21 jambes partielles
 - Marge moyenne **~0,6 bp/trade** (≈6,1-6,8 $ / 100 K$) — bande cible 0,5-0,9 pip
 - Séquence 3 jambes : **7,5 ms** vs persistance médiane des épisodes **296 ms**
   (p90 7,25 s) — la fenêtre temporelle n'est pas le goulot
-- Convergence calibrée : latence 1,3-2,5 ms · fraîcheur 0,9-1,2 s · ddd_min 1,7-3,6 $
 
-Détail complet : `audit/RAPPORT_INSAMPLE.md`.
+Détail complet : `audit/RAPPORT_INSAMPLE.md` · `audit/HOLDOUT_2026-10-27.md`
+· `docs/07_REGIME_SEUIL.md`.
 
 ## Feuille de route (runbook Solution A)
 

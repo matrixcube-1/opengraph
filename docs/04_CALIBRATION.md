@@ -83,3 +83,21 @@ est **nécessaire sans être suffisante**. Pour la marge unitaire, voir
 
 Ces corrections sont la raison pour laquelle la campagne v2 est la première
 dont les résultats sont exploitables.
+
+## 7. Addendum — audit du seuil et re-tuning (31 oct. 2026)
+
+Le best de la campagne (`P` figé, `ddd_min = 0`) saignait sur jours calmes
+en venue réaliste : l'objectif `ΣPnL_jour` laissait le 22/10 (~98 % de la
+masse) dominer. Deux enseignements :
+
+- **Biais d'objectif** : corrigé dans `poc_optuna_pen.py` par la contrainte
+  hard `no_losing_day` (min_d PnL_d ≥ 0) — lexicographique exact, sans
+  pondération arbitraire ; fallback documenté.
+- **Limite structurelle du modèle rapide** : ni le replay Python ni
+  `exec_seq` interne ne reproduisent les jours perdants (le saignement vit
+  dans la couche venue : caps L1, haircut de file, IOC au tick ≥ t+lat).
+  Le retune effectif s'est donc fait par **re-sérialisation du flux venue**
+  (`poc_thresh_grid.py`) → plateau `ddd_min ∈ [2, 4]`, retenu **2,5 $**.
+
+Voir [07_REGIME_SEUIL.md](07_REGIME_SEUIL.md) §5-6 pour le plateau complet
+et le verdict holdout post-hoc.

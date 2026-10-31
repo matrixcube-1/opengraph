@@ -12,7 +12,12 @@
 - Extractions txt régénérées : `MC/constitution_unifiee.txt`, `MC/document_scelle.txt`.
 
 ## Périmètre des données (ne pas élargir)
-- Univers = Annexe J du Document scellé : 28 paires FX (J.2) + 32 bouts (J.3) = 60 instruments.
+- Univers opérationnel (décision 31/10/2026) : 28 paires FX + **26 bouts
+  liquides** (13 indices + 11 métaux + 2 énergie) = 54 instruments.
+  Les 6 softs — SUGAR, COCOA, COFFEE, COTTON, SOYBEAN, OJUICE — sont
+  **définitivement exclus** : faible liquidité, données supprimées du
+  serveur, clés ledger retirées, ne pas re-télécharger.
+- Univers scellé d'origine = Annexe J du Document scellé : 28 paires FX (J.2) + 32 bouts (J.3) = 60 instruments.
   Exclus (J.4) : WHEAT, CORN, ES35, CHINA50, XNGUSD, HK50, SA40, paires feuilles, CME.
 - Fenêtre de calibrage : 2025-01-01 → 2026-09-01 exclu (janv. 2025 → août 2026, 20 mois).
 - Conversions J.3 à l'ingestion : SWI20 (CHEIDXCHF) CHF→USD via USDCHF ; *CMDUSX ÷ 100.

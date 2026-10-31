@@ -31,6 +31,12 @@ impl Pending {
         self.map.lock().unwrap().contains_key(cmid)
     }
 
+    /// Retire une entrée sans réponse (envoi/encodage raté — le receveur
+    /// voit son oneshot se fermer et retourne `Dead`).
+    pub fn cancel(&self, cmid: &str) {
+        self.map.lock().unwrap().remove(cmid);
+    }
+
     /// Résout la requête si le message porte un `clientMsgId` attendu.
     /// Retourne true si une requête en attente a été résolue.
     pub fn resolve(&self, msg: ProtoMessage<'static>) -> bool {

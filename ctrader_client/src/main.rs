@@ -33,7 +33,7 @@ use ctrader_client::proto::spotware::{
     ProtoOAErrorRes, ProtoOAExecutionEvent, ProtoOAGetAccountListByAccessTokenRes,
     ProtoOAOrderErrorEvent, ProtoOAPayloadType, ProtoOAReconcileRes, ProtoOASpotEvent,
     ProtoOASubscribeSpotsReq, ProtoOASymbolByIdReq, ProtoOASymbolByIdRes, ProtoOASymbolsListReq,
-    ProtoOASymbolsListRes, ProtoOATraderRes, ProtoMessage,
+    ProtoOASymbolsListRes, ProtoOATradeSide, ProtoOATraderRes, ProtoMessage,
 };
 use ctrader_client::reconcile;
 use ctrader_client::session::{in_session, should_flatten_now};
@@ -189,15 +189,20 @@ struct State {
     seq_no: u64,
     seq: Option<PathExec>,
     in_flight: Option<InFlight>,
-    /// Position nette cumulée par edge (fills jambes + fills unwinds).
+    /// Position nette cumulée par edge (fills jambes + fills unwinds
+    /// + baseline venue adoptée au premier reconcile de la session).
     net_pos: BTreeMap<u8, f64>,
     /// Clôtures IOC à émettre (abort + flatten), une à la fois.
     unwind_queue: Vec<(u8, ProtoTrade, f64)>,
     /// Nb d'ordres unwind en attente (file + en vol).
     unwind_outstanding: usize,
+    /// Compteur unwind — unicité des `clientOrderId` (même edge répété).
+    unwind_no: u64,
     /// `sent_ms` de la dernière jambe (lat_ms du journal).
     last_leg_sent_ms: i64,
     flatten_done_today: bool,
+    /// `true` après adoption de la baseline venue (post-reconnect).
+    recon_seeded: bool,
 }
 
 impl State {
@@ -212,8 +217,10 @@ impl State {
             net_pos: BTreeMap::new(),
             unwind_queue: Vec::new(),
             unwind_outstanding: 0,
+            unwind_no: 0,
             last_leg_sent_ms: 0,
             flatten_done_today: false,
+            recon_seeded: false,
         }
     }
 
@@ -265,13 +272,21 @@ async fn fire_next_leg(
         return Ok(());
     };
     let (bid, ask) = (st.engine.bid[si_idx], st.engine.ask[si_idx]);
+    if bid <= 0.0 || ask <= 0.0 {
+        abort_seq(st, journal, "no_quote");
+        return Ok(());
+    }
     let coid = format!("OG{:06}L{}", st.seq_no, seq.li);
     let Some(intent) = seq.intent_for(bid, ask, si, coid) else {
         abort_seq(st, journal, "no_intent");
         return Ok(());
     };
     if mode == Mode::Trade {
-        send_order(handle, st.ctid, si.symbol_id, &intent, "og-leg").await?;
+        if let Err(e) = send_order(handle, st.ctid, si.symbol_id, &intent, "og-leg").await {
+            // sans abort ici, la séquence resterait `busy` à jamais
+            abort_seq(st, journal, "send_fail");
+            return Err(e);
+        }
     }
     journal.log(now_ms(), &JEvent::LegSend {
         t0: seq.t0,
@@ -358,7 +373,19 @@ async fn pump_unwind(
         return;
     };
     let (bid, ask) = (st.engine.bid[si_idx], st.engine.ask[si_idx]);
-    let coid = format!("OG{:06}U{}", st.seq_no, edge);
+    if bid <= 0.0 || ask <= 0.0 {
+        st.unwind_queue.remove(0);
+        st.unwind_outstanding = st.unwind_outstanding.saturating_sub(1);
+        journal.log(now_ms(), &JEvent::VenueError {
+            code: "unwind_no_quote".into(),
+            desc: format!("edge={edge} qty={qty}"),
+            action: "manual_check".into(),
+        });
+        pump_unwind_boxed(st, handle, sym, journal, mode).await;
+        return;
+    }
+    st.unwind_no += 1;
+    let coid = format!("OG{:06}U{}-{}", st.seq_no, edge, st.unwind_no);
     let Some(intent) = unwind_intent(edge, trade, qty, bid, ask, sym, coid) else {
         st.unwind_queue.remove(0);
         st.unwind_outstanding = st.unwind_outstanding.saturating_sub(1);
@@ -519,6 +546,27 @@ async fn check_leg_timeout(
         return;
     }
     let f = st.in_flight.take().unwrap();
+    // Fills partiels accumulés avant le timeout : la position venue
+    // existe — elle doit entrer dans net_pos (et pos_deltas pour que
+    // l'unwind_plan de l'abort la couvre), sinon résiduel invisible.
+    if f.fills.qty > 0.0 {
+        let delta = if f.trade == ProtoTrade::Sell {
+            -f.fills.qty
+        } else {
+            f.fills.qty
+        };
+        *st.net_pos.entry(f.edge).or_insert(0.0) += delta;
+        if !f.unwind {
+            if let Some(seq) = st.seq.as_mut() {
+                *seq.pos_deltas.entry(f.edge).or_insert(0.0) += delta;
+            }
+        }
+        journal.log(now_ms(), &JEvent::VenueError {
+            code: "timeout_partial_fill".into(),
+            desc: format!("edge={} qty={} coid={}", f.edge, f.fills.qty, f.intent.client_order_id),
+            action: "accounted".into(),
+        });
+    }
     if f.unwind {
         st.unwind_outstanding = st.unwind_outstanding.saturating_sub(1);
         journal.log(now_ms(), &JEvent::VenueError {
@@ -564,11 +612,35 @@ async fn on_exec(
         .is_some_and(|f| f.intent.client_order_id == coid);
     if !is_ours {
         if coid.starts_with("OG") {
-            journal.log(now_ms(), &JEvent::VenueError {
-                code: "exec_no_inflight".into(),
-                desc: format!("coid={coid} type={:?}", ev.executionType),
-                action: "log".into(),
-            });
+            // Fill tardif d'un de nos ordres (résolu par timeout/erreur
+            // entre-temps) : la position venue existe — comptabiliser
+            // son delta dans net_pos, sinon résiduel invisible.
+            let mut accounted = false;
+            if let Some(d) = ev.deal.as_ref() {
+                if d.filledVolume > 0 {
+                    if let Some((edge, si)) = sym.by_symbol_id(d.symbolId) {
+                        let qty = si.from_volume(d.filledVolume);
+                        let signed = if d.tradeSide == ProtoOATradeSide::SELL { -qty } else { qty };
+                        *st.net_pos.entry(edge).or_insert(0.0) += signed;
+                        accounted = true;
+                        journal.log(now_ms(), &JEvent::VenueError {
+                            code: "late_fill_accounted".into(),
+                            desc: format!(
+                                "coid={coid} edge={edge} qty={qty} side={:?}",
+                                d.tradeSide
+                            ),
+                            action: "net_pos".into(),
+                        });
+                    }
+                }
+            }
+            if !accounted {
+                journal.log(now_ms(), &JEvent::VenueError {
+                    code: "exec_no_inflight".into(),
+                    desc: format!("coid={coid} type={:?}", ev.executionType),
+                    action: "log".into(),
+                });
+            }
         }
         return;
     }
@@ -660,7 +732,9 @@ async fn handle_frame(
             let Some(si_idx) = st.engine.fx_si[edge as usize] else { return };
             let t = q.ts_ms;
             st.engine.ingest(si_idx, q);
-            if !in_session(t) || st.busy() {
+            // Pas de nouvelle séquence dans la fenêtre de flatten : un
+            // chemin ouvert à 20:55 serait tué à mi-parcours à 21:00.
+            if !in_session(t) || should_flatten_now(t) || st.busy() {
                 return;
             }
             let Some(r) = st.engine.eval_at(
@@ -755,6 +829,25 @@ async fn handle_frame(
         2125 => {
             let Ok(res) = decode_payload::<ProtoOAReconcileRes>(&msg) else { return };
             let venue = reconcile::venue_positions(&res, sym);
+            if !st.recon_seeded {
+                // Premier reconcile de la session : baseline venue —
+                // les positions survivantes d'une session précédente
+                // (reconnect, crash) entrent dans net_pos, sinon elles
+                // resteraient orphelines jusqu'au prochain flatten.
+                st.recon_seeded = true;
+                let mut adopted = 0usize;
+                for &(sym_id, q) in &venue {
+                    if let Some((edge, _)) = sym.by_symbol_id(sym_id) {
+                        if q.abs() > 1e-9 {
+                            *st.net_pos.entry(edge).or_insert(0.0) += q;
+                            adopted += 1;
+                        }
+                    }
+                }
+                journal.log(now_ms(), &JEvent::System {
+                    msg: format!("baseline venue adoptée ({adopted} positions)"),
+                });
+            }
             let internal = reconcile::internal_positions(&st.net_pos, sym);
             let divergent = !reconcile::diff(&venue, &internal, 1_000.0).is_empty();
             journal.log(now_ms(), &JEvent::Reconcile { venue, internal, divergent });
@@ -774,6 +867,50 @@ async fn handle_frame(
 
 // --------------------------------------------------------------- main
 
+/// Tâches périodiques — appelées après CHAQUE itération de la boucle :
+/// sous un flot continu de ticks la branche `select!` inbound gagnerait
+/// toujours et heartbeats/timeouts/reconcile/flatten seraient affamés.
+async fn housekeeping(
+    st: &mut State,
+    handle: &NetHandle,
+    sym: &SymTable,
+    journal: &Journal,
+    cfg: &Config,
+    last_hb: &mut Instant,
+    last_rec: &mut Instant,
+) -> Result<(), ClientError> {
+    if last_hb.elapsed() >= HB_SEND {
+        *last_hb = Instant::now();
+        let _ = handle.outbound.send(heartbeat_msg()).await;
+    }
+    if let Some(age) = handle.last_rx.age() {
+        if age > HB_WATCHDOG {
+            return Err(ClientError::Dead(format!("watchdog {age:?}")));
+        }
+    }
+    check_leg_timeout(st, handle, sym, journal, cfg).await;
+    if last_rec.elapsed() >= Duration::from_secs(cfg.reconcile_s) {
+        *last_rec = Instant::now();
+        let req = reconcile::reconcile_req(st.ctid);
+        if let Ok(p) = encode_payload(&req) {
+            let _ = handle
+                .outbound
+                .send(owned_envelope(ProtoOAPayloadType::PROTO_OA_RECONCILE_REQ, p))
+                .await;
+        }
+    }
+    let t = now_ms();
+    if should_flatten_now(t) && !st.flatten_done_today {
+        st.flatten_done_today = true;
+        journal.log(t, &JEvent::System { msg: "flatten fin de session".into() });
+        flatten_all(st, handle, sym, journal, cfg.mode).await;
+    }
+    if !in_session(t) {
+        st.flatten_done_today = false;
+    }
+    Ok(())
+}
+
 async fn run_session(
     handle: &mut NetHandle,
     cfg: &Config,
@@ -787,45 +924,26 @@ async fn run_session(
     let mut last_hb = Instant::now();
     let mut last_rec = Instant::now();
 
+    // Reconcile immédiat : baseline venue (positions survivantes d'une
+    // session précédente) avant tout ordre — voir arm 2125 (recon_seeded).
+    let req = reconcile::reconcile_req(ctid);
+    if let Ok(p) = encode_payload(&req) {
+        let _ = handle
+            .outbound
+            .send(owned_envelope(ProtoOAPayloadType::PROTO_OA_RECONCILE_REQ, p))
+            .await;
+    }
+
     loop {
         tokio::select! {
-            biased;
             inc = handle.inbound.recv() => match inc {
                 Some(Incoming::Msg(m)) => handle_frame(&mut st, m, handle, &sym, journal, cfg).await,
                 Some(Incoming::Dead(d)) => return Err(ClientError::Dead(d)),
                 None => return Err(ClientError::Dead("inbound fermé".into())),
             },
-            _ = tick.tick() => {
-                if last_hb.elapsed() >= HB_SEND {
-                    last_hb = Instant::now();
-                    let _ = handle.outbound.send(heartbeat_msg()).await;
-                }
-                if let Some(age) = handle.last_rx.age() {
-                    if age > HB_WATCHDOG {
-                        return Err(ClientError::Dead(format!("watchdog {age:?}")));
-                    }
-                }
-                check_leg_timeout(&mut st, handle, &sym, journal, cfg).await;
-                if last_rec.elapsed() >= Duration::from_secs(cfg.reconcile_s) {
-                    last_rec = Instant::now();
-                    let req = reconcile::reconcile_req(ctid);
-                    if let Ok(p) = encode_payload(&req) {
-                        let _ = handle.outbound.send(owned_envelope(
-                            ProtoOAPayloadType::PROTO_OA_RECONCILE_REQ, p,
-                        )).await;
-                    }
-                }
-                let t = now_ms();
-                if should_flatten_now(t) && !st.flatten_done_today {
-                    st.flatten_done_today = true;
-                    journal.log(t, &JEvent::System { msg: "flatten fin de session".into() });
-                    flatten_all(&mut st, handle, &sym, journal, cfg.mode).await;
-                }
-                if !in_session(t) {
-                    st.flatten_done_today = false;
-                }
-            }
+            _ = tick.tick() => {},
         }
+        housekeeping(&mut st, handle, &sym, journal, cfg, &mut last_hb, &mut last_rec).await?;
     }
 }
 

@@ -5,16 +5,18 @@
 
 use std::borrow::Cow;
 
-use quacky::{BytesReader, BytesWriter, MessageRead, MessageWrite, Writer};
+use quacky::{BytesReader, MessageRead, MessageWrite, Writer};
 
 use crate::err::ClientError;
 use crate::proto::spotware::ProtoMessage;
 use crate::MAX_FRAME_SIZE;
 
 /// Encode une `ProtoMessage` en protobuf (sans l'en-tête de trame).
+/// `Writer` sur `Vec` : exactement les octets écrits, jamais de zéros
+/// résiduels d'un buffer pré-dimensionné par `get_size`.
 pub fn encode_msg(msg: &ProtoMessage<'_>) -> Result<Vec<u8>, ClientError> {
-    let mut buf = vec![0u8; msg.get_size()];
-    let mut w = Writer::new(BytesWriter::new(&mut buf));
+    let mut buf = Vec::with_capacity(msg.get_size());
+    let mut w = Writer::new(&mut buf);
     msg.write_message(&mut w)
         .map_err(|e| ClientError::Proto(e.to_string()))?;
     Ok(buf)
@@ -65,8 +67,8 @@ pub fn frame_payload<M: MessageWrite>(
     msg: &M,
     client_msg_id: Option<&str>,
 ) -> Result<Vec<u8>, ClientError> {
-    let mut buf = vec![0u8; msg.get_size()];
-    let mut w = Writer::new(BytesWriter::new(&mut buf));
+    let mut buf = Vec::with_capacity(msg.get_size());
+    let mut w = Writer::new(&mut buf);
     msg.write_message(&mut w)
         .map_err(|e| ClientError::Proto(e.to_string()))?;
     frame(&envelope(payload_type, buf, client_msg_id))

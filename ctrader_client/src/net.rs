@@ -21,7 +21,7 @@ use crate::codec::{decode_msg, frame};
 use crate::config::Env;
 use crate::err::ClientError;
 use crate::heartbeat::LastRx;
-use crate::io::{FrameIo, TlsIo};
+use crate::io::{FrameIo, FrameRd, FrameWr, TlsIo};
 use crate::pending::Pending;
 use crate::proto::spotware::ProtoMessage;
 
@@ -57,6 +57,18 @@ pub struct NetHandle {
     pub pending: Pending,
     /// Horloge partagée de réception (watchdog).
     pub last_rx: LastRx,
+    /// Tâches lecteur/écrivain — abortées quand le handle est détruit
+    /// (reconnect) : les moitiés de socket tombent avec elles -> close.
+    tasks: Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)>,
+}
+
+impl Drop for NetHandle {
+    fn drop(&mut self) {
+        if let Some((a, b)) = self.tasks.take() {
+            a.abort();
+            b.abort();
+        }
+    }
 }
 
 /// Connecte TCP+TLS (rustls, TCP_NODELAY) vers `env` — port 5035.
@@ -84,51 +96,55 @@ pub async fn connect(env: Env, timeout: Duration) -> Result<TlsIo, ClientError> 
 }
 
 /// Lance la pompe sur un `FrameIo` quelconque (TLS réel ou `MemIo` mock).
-/// `last_rx` est touché à chaque frame venue — alimente le watchdog.
-pub fn spawn<Io>(mut io: Io, last_rx: LastRx) -> NetHandle
+/// Deux tâches indépendantes : lecteur (`recv` jamais annulé — `read_exact`
+/// n'est pas cancel-safe) et écrivain. `last_rx` touche à chaque frame.
+pub fn spawn<Io>(io: Io, last_rx: LastRx) -> NetHandle
 where
     Io: FrameIo + Send + 'static,
+    Io::Rd: Send + 'static,
+    Io::Wr: Send + 'static,
 {
     let (out_tx, mut out_rx) = mpsc::channel::<ProtoMessage<'static>>(256);
     let (in_tx, in_rx) = mpsc::channel::<Incoming>(512);
-    let pump_rx = last_rx.clone();
+    let (mut rd, mut wr) = io.split();
 
-    tokio::spawn(async move {
+    // Écrivain : enveloppes outbound -> trames sur le fil.
+    // Une écriture qui échoue = transport mort -> signal Dead + stop.
+    let in_tx_w = in_tx.clone();
+    let wr_task = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            match frame(&msg) {
+                Ok(bytes) => {
+                    if let Err(e) = wr.send(&bytes).await {
+                        let _ = in_tx_w.send(Incoming::Dead(format!("send: {e}"))).await;
+                        return;
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, "encodage trame impossible"),
+            }
+        }
+    });
+
+    // Lecteur : trames venue -> enveloppes décodées -> inbound.
+    // `recv` tourne à complétion — aucun select! autour de lui.
+    let pump_rx = last_rx.clone();
+    let rd_task = tokio::spawn(async move {
         loop {
-            tokio::select! {
-                biased;
-                // priorité aux envois : un ordre ne doit jamais attendre
-                // derrière un flot de ticks.
-                msg = out_rx.recv() => {
-                    let Some(msg) = msg else { return };
-                    match frame(&msg) {
-                        Ok(bytes) => {
-                            if let Err(e) = io.send(&bytes).await {
-                                let _ = in_tx.send(Incoming::Dead(format!("send: {e}"))).await;
+            match rd.recv().await {
+                Ok(payload) => {
+                    pump_rx.touch();
+                    match decode_msg(&payload) {
+                        Ok(m) => {
+                            if in_tx.send(Incoming::Msg(m)).await.is_err() {
                                 return;
                             }
                         }
-                        Err(e) => tracing::error!(error = %e, "encodage trame impossible"),
+                        Err(e) => tracing::warn!(error = %e, "frame indécodable"),
                     }
                 }
-                r = io.recv() => {
-                    match r {
-                        Ok(payload) => {
-                            pump_rx.touch();
-                            match decode_msg(&payload) {
-                                Ok(m) => {
-                                    if in_tx.send(Incoming::Msg(m)).await.is_err() {
-                                        return;
-                                    }
-                                }
-                                Err(e) => tracing::warn!(error = %e, "frame indécodable"),
-                            }
-                        }
-                        Err(e) => {
-                            let _ = in_tx.send(Incoming::Dead(format!("recv: {e}"))).await;
-                            return;
-                        }
-                    }
+                Err(e) => {
+                    let _ = in_tx.send(Incoming::Dead(format!("recv: {e}"))).await;
+                    return;
                 }
             }
         }
@@ -139,11 +155,13 @@ where
         inbound: in_rx,
         pending: Pending::default(),
         last_rx,
+        tasks: Some((rd_task, wr_task)),
     }
 }
 
 /// Construit une enveloppe requête : payload encodé + `clientMsgId` unique,
-/// pending enregistré AVANT l'envoi (jamais de course).
+/// pending enregistré AVANT l'envoi (jamais de course), désenregistré si
+/// l'encodage ou l'envoi échoue (pas de fuite dans la table).
 /// Retourne `(clientMsgId, receveur)` — le cmid sert à `await_response`.
 pub async fn send_request<M: quacky::MessageWrite>(
     handle: &NetHandle,
@@ -152,14 +170,27 @@ pub async fn send_request<M: quacky::MessageWrite>(
 ) -> Result<(String, oneshot::Receiver<ProtoMessage<'static>>), ClientError> {
     let cmid = uuid::Uuid::new_v4().to_string();
     let rx = handle.pending.register(&cmid);
-    let env = crate::codec::envelope(payload_type, encode_payload(msg)?, Some(cmid.as_str()));
-    let env: ProtoMessage<'static> = ProtoMessage {
-        payloadType: env.payloadType,
-        payload: env.payload.map(|c| Cow::Owned(c.into_owned())),
-        clientMsgId: env.clientMsgId.map(|c| Cow::Owned(c.into_owned())),
-    };
-    handle.outbound.send(env).await?;
-    Ok((cmid, rx))
+    let res = encode_payload(msg).and_then(|p| {
+        let env = crate::codec::envelope(payload_type, p, Some(cmid.as_str()));
+        Ok(ProtoMessage {
+            payloadType: env.payloadType,
+            payload: env.payload.map(|c| Cow::Owned(c.into_owned())),
+            clientMsgId: env.clientMsgId.map(|c| Cow::Owned(c.into_owned())),
+        })
+    });
+    match res {
+        Ok(env) => match handle.outbound.send(env).await {
+            Ok(()) => Ok((cmid, rx)),
+            Err(e) => {
+                handle.pending.cancel(&cmid);
+                Err(e)
+            }
+        },
+        Err(e) => {
+            handle.pending.cancel(&cmid);
+            Err(e)
+        }
+    }
 }
 
 /// Attend la réponse corrélée ; nettoie le pending si timeout.
@@ -174,9 +205,12 @@ pub async fn await_response(
 }
 
 /// Sérialise un message métier en payload protobuf.
+/// `Writer` sur `Vec` (impl `io::Write` de quacky) : le buffer contient
+/// exactement les octets écrits — aucun couplage à `get_size` (un buffer
+/// trop grand laisserait des zéros corrompre la trame, trop petit -> Err).
 pub fn encode_payload<M: quacky::MessageWrite>(msg: &M) -> Result<Vec<u8>, ClientError> {
-    let mut buf = vec![0u8; msg.get_size()];
-    let mut w = quacky::Writer::new(quacky::BytesWriter::new(&mut buf));
+    let mut buf = Vec::with_capacity(msg.get_size());
+    let mut w = quacky::Writer::new(&mut buf);
     msg.write_message(&mut w)
         .map_err(|e| ClientError::Proto(e.to_string()))?;
     Ok(buf)

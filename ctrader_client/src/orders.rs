@@ -166,9 +166,12 @@ pub fn on_execution_event(
     if ev_coid != Some(coid) {
         return None;
     }
-    // accumule le fill de l'événement (deal privilégié)
+    // accumule le fill de l'événement (deal privilégié).
+    // `deal.volume` = volume ENVOYÉ, `filledVolume` = réellement rempli
+    // (doc officielle ProtoOADeal) — prendre `max` sur-compterait les
+    // deals partiels : seule la quantité exécutée compte.
     if let Some(d) = ev.deal.as_ref() {
-        let qty = si.from_volume(d.filledVolume.max(d.volume));
+        let qty = si.from_volume(d.filledVolume);
         let px = d.executionPrice.unwrap_or(0.0);
         if qty > 0.0 && px > 0.0 {
             acc.add(qty, px);
@@ -356,6 +359,35 @@ mod tests {
             r,
             LegResolution::Filled { qty_base: 60_000.0, px_fill: 1.1835, order_id: 77 }
         );
+    }
+
+    /// Régression C2 : `deal.volume` = volume ENVOYÉ, `filledVolume` =
+    /// réellement rempli (doc officielle ProtoOADeal). Un deal partiel
+    /// 6M/10M ne doit créditer que 60 000 unités — `max(volume,filled)`
+    /// aurait sur-compté 100 000.
+    #[test]
+    fn partial_deal_credits_filled_volume_only() {
+        let mut acc = FillAcc::default();
+        let ev = ProtoOAExecutionEvent {
+            executionType: ProtoOAExecutionType::ORDER_PARTIAL_FILL,
+            order: Some(order("xp", None, None)),
+            deal: Some(ProtoOADeal {
+                dealId: 1,
+                orderId: 77,
+                positionId: 9,
+                volume: 10_000_000,
+                filledVolume: 6_000_000,
+                symbolId: 1,
+                createTimestamp: 1,
+                executionTimestamp: 2,
+                executionPrice: Some(1.1835),
+                tradeSide: ProtoOATradeSide::BUY,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(on_execution_event(&ev, "xp", &mut acc, &sym()).is_none());
+        assert_eq!(acc.qty, 60_000.0, "seul filledVolume doit compter");
     }
 
     #[test]

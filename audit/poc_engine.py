@@ -51,6 +51,17 @@ METAL_COMM = {"XAUUSD":0.875,"XAGUSD":7.292,"XPTCMDUSD":2.333,"XPDCMDUSD":2.692,
               "XAUAUD":0.875,"XAGAUD":7.292}
 CONV_COST = {"CHEIDXCHF": 4.0}   # jambe USDCHF implicite (comm + demi-spread)
 
+# Sauts métal INTÉRIEURS : XAU coté en 6 devises, XAG en 3 -> le métal
+# est un nœud de passage réel du graphe (croisement métal-FX).
+# Un hop A->B = 2 ordres séquentiels (achat Metal-A à l'ask, vente
+# Metal-B au bid) mais compte pour 1 JAMBE du budget <=3 (décision
+# utilisateur). Résiduel toujours en devise -> Convention A inchangée.
+METALS = ["XAU", "XAG"]
+METAL_CCYS = {"XAU": ("USD","EUR","GBP","JPY","CHF","AUD"),
+              "XAG": ("USD","EUR","AUD")}
+METAL_SYM = {m: {c: m + c for c in cs} for m, cs in METAL_CCYS.items()}
+INCLUDE_TERMINAL_BOUTS = False   # résiduel tenu dominé : 0/1 029 811 argmax
+
 
 def load_sym(sym):
     ts, bs, as_, vs = [], [], [], []
@@ -71,8 +82,9 @@ def load_sym(sym):
     return (np.asarray(ts)[o], np.asarray(bs)[o], np.asarray(as_)[o], np.asarray(vs)[o])
 
 
-def enum_paths():
-    """Chemins ouverts <=3 jambes FX (+ bout terminal optionnel).
+def enum_paths(mixed=False):
+    """Chemins ouverts <=3 jambes : arêtes FX + sauts métal (si mixed).
+    Un saut ("X", metal, cible) = 1 jambe logique, 2 ordres réels.
     Retourne (paths, starts) : starts[i] = noeud de depart reel du DFS —
     un chemin peut partir du cote quote de sa 1ere arete."""
     fe = [(CI[s[:3]], CI[s[3:]], s) for s in FX]
@@ -80,25 +92,40 @@ def enum_paths():
     for ei, (a, b, s) in enumerate(fe):
         adj[a].append((ei, b))
         adj[b].append((ei, a))          # paire bidirectionnelle
+    # adjacence métal : métal coté dans les deux devises -> hop possible
+    madj = {i: [] for i in range(8)}
+    if mixed:
+        for m in METALS:
+            cs = METAL_CCYS[m]
+            for i, c1 in enumerate(cs):
+                for c2 in cs[i + 1:]:
+                    a, b = CI[c1], CI[c2]
+                    madj[a].append((m, b))
+                    madj[b].append((m, a))
     paths = []; starts = []
     def dfs(node, seen, legs, eis, s0):
         if legs:
             paths.append(tuple(eis)); starts.append(s0)
-            for bs, qc in BOUTS.items():
-                if CI[qc] == node:
-                    paths.append(tuple(eis) + (("B", bs),)); starts.append(s0)
+            if INCLUDE_TERMINAL_BOUTS:
+                for bs, qc in BOUTS.items():
+                    if CI[qc] == node:
+                        paths.append(tuple(eis) + (("B", bs),)); starts.append(s0)
         if legs >= 3:
             return
         for ei, b in adj[node]:
             if b not in seen:
                 dfs(b, seen | {b}, legs + 1, eis + [ei], s0)
+        for m, b in madj[node]:
+            if b not in seen:
+                dfs(b, seen | {b}, legs + 1, eis + [("X", m, b)], s0)
     for s0 in range(8):
         dfs(s0, {s0}, 0, [], s0)
     return paths, starts
 
 
 class Engine:
-    def __init__(self, syms=None, verbose=True):
+    def __init__(self, syms=None, verbose=True, mixed=False):
+        self.mixed = mixed
         self.syms = syms or SYMS
         self.data = {s: load_sym(s) for s in self.syms}
         self.data = {s: v for s, v in self.data.items() if v is not None}
@@ -110,12 +137,15 @@ class Engine:
         # conversion Duka -> nœud IC : le facteur s'annule dans bid/ask — seul
         # résidu : coût de la conversion SWI20 CHF->USD (~1 jambe FX) et USX (x0.01)
         self.B_SI = np.array([self.sidx[s] for s in BOUTS if s in self.sidx])
-        self.paths, self.p_start = enum_paths()
+        self.paths, self.p_start = enum_paths(mixed)
         self.fe = {s: (CI[s[:3]], CI[s[3:]]) for s in FX}
         self._vectorize()
-        # événements FX (détection) ; les bouts entrent dans l'état via quotes lues à l'éval
+        # événements de détection : FX + dénominations métal (un décrochage
+        # métal sans mouvement FX doit aussi déclencher l'évaluation)
         ev_t, ev_i = [], []
-        for s in FX:
+        ev_syms = FX + ([ms for cs in METAL_SYM.values() for ms in cs.values()]
+                        if self.mixed else [])
+        for s in ev_syms:
             if s in self.sidx:
                 t = self.data[s][0]
                 ev_t.append(t); ev_i.append(np.full(len(t), self.sidx[s]))
@@ -129,9 +159,9 @@ class Engine:
         self.last_t = np.full(n, -1e18)
         if verbose:
             tot = sum(len(v[0]) for v in self.data.values())
-            fx_only = int((~self.P_HASB).sum())
+            n_mixed = int(self.P_ISM.any(1).sum())
             print(f"{len(self.data)}/{len(self.syms)} symboles | {tot:,} ticks | "
-                  f"{len(self.paths)} chemins ({fx_only} FX + {len(self.paths)-fx_only} bouts) | "
+                  f"{len(self.paths)} chemins ({len(self.paths)-n_mixed} FX + {n_mixed} mixtes) | "
                   f"{len(self.ev_t):,} events FX")
 
     def _vectorize(self):
@@ -148,18 +178,34 @@ class Engine:
         self.P_HASB = np.zeros(n_p, bool)         # terminaison bout structurelle
         self.P_BOUT = np.full(n_p, -1)            # slist idx du bout (-1 = non chargé)
         self.P_L = np.zeros(n_p, int)
-        self.P_CB = np.zeros(n_p)                  # commission bout par chemin
+        self.P_CB = np.zeros(n_p)                  # commission non-FX par chemin
+        self.P_ISM = np.zeros((n_p, 3), bool)     # jambe = saut métal
+        self.P_M1 = np.full((n_p, 3), -1)         # slist idx sym métal départ
+        self.P_M2 = np.full((n_p, 3), -1)         # slist idx sym métal arrivée
         for pi, path in enumerate(self.paths):
             node = self.p_start[pi]; li = 0
+            self.P_S[pi] = node          # noeud de depart (jambe 0 peut etre metal)
             for e in path:
                 if isinstance(e, tuple):
-                    self.P_HASB[pi] = True
-                    self.P_BOUT[pi] = self.sidx.get(e[1], -1)
-                    self.P_CB[pi] = METAL_COMM.get(e[1], 0.0) + CONV_COST.get(e[1], 0.0)
+                    if e[0] == "B":
+                        self.P_HASB[pi] = True
+                        self.P_BOUT[pi] = self.sidx.get(e[1], -1)
+                        self.P_CB[pi] += METAL_COMM.get(e[1], 0.0) + CONV_COST.get(e[1], 0.0)
+                        continue
+                    # ("X", métal, cible) : saut intérieur — 2 ordres, 1 jambe
+                    m, to = e[1], e[2]
+                    s1 = METAL_SYM[m][CURR[node]]
+                    s2 = METAL_SYM[m][CURR[to]]
+                    self.P_ISM[pi, li] = True
+                    self.P_M1[pi, li] = self.sidx.get(s1, -1)
+                    self.P_M2[pi, li] = self.sidx.get(s2, -1)
+                    self.P_CB[pi] += (METAL_COMM.get(s1, 0.0)
+                                      + METAL_COMM.get(s2, 0.0))
+                    node = to
+                    li += 1
+                    self.P_END[pi] = node
                     continue
                 s = FX[e]; a, b = CI[s[:3]], CI[s[3:]]
-                if li == 0:
-                    self.P_S[pi] = node
                 d = +1 if node == a else -1
                 self.P_DIR[pi, li] = d
                 self.P_E[pi, li] = e
@@ -229,15 +275,29 @@ class Engine:
         R = slice(None) if rows is None else rows
         # taux dirigés par jambe de chemin : (P,3) — E = indice d'arête FX (0..27)
         E = self.P_E[R]
-        req = E >= 0
-        SI = np.where(req, self.E_S[np.maximum(E, 0)], -1)    # -> slist (-1 = non chargé)
-        leg_ok = np.where(req, (SI >= 0) & fx_ok[np.maximum(SI, 0)], True)
+        ISM = self.P_ISM[R]
+        has_leg = (E >= 0) | ISM                            # FX ou saut métal
+        SI = np.where(E >= 0, self.E_S[np.maximum(E, 0)], -1)    # -> slist (-1 = non chargé)
+        fx_ok_leg = np.where(E >= 0, (SI >= 0) & fx_ok[np.maximum(SI, 0)], True)
+        # sauts métal : les deux dénominations chargées + fraîches ; le cap
+        # spread s'applique aussi (médiane propre à l'instrument).
+        metal_ok = ok & ~spread_viol
+        M1 = self.P_M1[R]; M2 = self.P_M2[R]
+        m1v = np.where(ISM, M1, 0); m2v = np.where(ISM, M2, 0)
+        m_ok = np.where(ISM,
+                        (M1 >= 0) & (M2 >= 0)
+                        & metal_ok[np.maximum(m1v, 0)] & metal_ok[np.maximum(m2v, 0)],
+                        True)
+        leg_ok = np.where(has_leg, np.where(ISM, m_ok, fx_ok_leg), True)
         base_up = up[np.maximum(self.P_BASE[R], 0)]
         comm_leg = np.where(self.P_BASE[R] >= 0, COMM / np.where(base_up > 0, base_up, np.nan), 0.0)
         bid_e = np.where(SI >= 0, self.bid[np.maximum(SI, 0)], np.nan)
         ask_e = np.where(SI >= 0, self.ask[np.maximum(SI, 0)], np.nan)
-        rate = np.where(self.P_DIR[R] == 1, bid_e, 1.0 / np.where(ask_e > 0, ask_e, np.nan))
-        rate = np.where(req & leg_ok, rate, 1.0)
+        rate_fx = np.where(self.P_DIR[R] == 1, bid_e, 1.0 / np.where(ask_e > 0, ask_e, np.nan))
+        # hop métal A->B : achat Métal-A à l'ask puis vente Métal-B au bid
+        rate_m = self.bid[m2v] / np.where(self.ask[m1v] > 0, self.ask[m1v], np.nan)
+        rate = np.where(ISM, rate_m, rate_fx)
+        rate = np.where(has_leg & leg_ok, rate, 1.0)
         all_ok = leg_ok.all(1) & (self.P_L[R] > 0)
         prod = np.prod(rate, 1)
         up_s = up[self.P_S[R]]
@@ -271,9 +331,9 @@ class Engine:
 
     def exec_seq(self, t0, pi, lat_ms, tau_slip_bp, q_min):
         path = self.paths[pi]
-        legs = [e for e in path if not isinstance(e, tuple)]
+        legs = [e for e in path if not (isinstance(e, tuple) and e[0] == "B")]
         bout = self.P_HASB[pi]
-        if any(FX[ei] not in self.data for ei in legs):
+        if any(isinstance(ei, int) and FX[ei] not in self.data for ei in legs):
             return None
         if bout and (self.P_BOUT[pi] < 0 or self.slist[self.P_BOUT[pi]] not in self.data):
             return None
@@ -295,6 +355,67 @@ class Engine:
                 t = t_f
                 return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm, why="bout",
                             fills=filled + 1, dur=t - t0, parts=parts)
+            if isinstance(ei, tuple):
+                # Saut métal A->B : ordre 1 achète Métal-A à l'ask (paye A,
+                # reçoit métal), ordre 2 vend Métal-B au bid (reçoit B).
+                # Non atomique : exposition métal entre les deux fills —
+                # résiduel liquidé Convention A dans la devise de départ.
+                m, to = ei[1], ei[2]
+                s1 = METAL_SYM[m][CURR[node]]; s2 = METAL_SYM[m][CURR[to]]
+                if s1 not in self.data or s2 not in self.data:
+                    return None
+                slip = tau_slip_bp * 1e-4
+                # ordre 1 : A -> métal (achat à l'ask, sémantique d=-1)
+                jt0, _, as0, _ = self.quote_at(s1, t)
+                q_send = 1.0 / as0
+                jt, bid1, ask1, j1 = self.quote_at(s1, t_f)
+                if j1 < 0 or not np.isfinite(q_send) or q_send <= 0:
+                    return self._abort("no quote", filled, cash, comm, t - t0, parts)
+                q_now = 1.0 / ask1
+                move = abs(q_now / q_send - 1.0)
+                if move > 3 * slip:
+                    return self._abort("kill IOC", filled, cash, comm, t - t0, parts)
+                frac = 1.0 if move <= slip else 0.6
+                if frac < q_min:
+                    return self._abort("q<q_min", filled, cash, comm, t - t0, parts)
+                if frac < 1.0:
+                    cash += qty * (1 - frac) * up[node]
+                    parts += 1
+                qty_m = qty * frac * q_now      # métal reçu (unités métal)
+                comm += METAL_COMM.get(s1, 0.0)
+                filled += 1
+                # ordre 2 : métal -> B (vente au bid, sémantique d=+1)
+                t_f2 = t_f + lat_ms
+                jt0b, b0s2, _, _ = self.quote_at(s2, t_f)
+                q_send2 = b0s2
+                jt, bid2, _, j2 = self.quote_at(s2, t_f2)
+                # liquidation Convention A du résiduel métal dans `node`
+                def liq_metal():
+                    _, bid1_now, _, jl = self.quote_at(s1, t_f2)
+                    return qty_m * (bid1_now if jl >= 0 else bid1) * up[node]
+                if j2 < 0 or not np.isfinite(q_send2) or q_send2 <= 0:
+                    cash += liq_metal()
+                    return self._abort("no quote m2", filled, cash, comm, t_f2 - t0, parts)
+                q_now2 = bid2
+                move2 = abs(q_now2 / q_send2 - 1.0)
+                if move2 > 3 * slip:
+                    cash += liq_metal()
+                    return self._abort("kill IOC m2", filled, cash, comm, t_f2 - t0, parts)
+                frac2 = 1.0 if move2 <= slip else 0.6
+                if frac2 < q_min:
+                    cash += liq_metal()
+                    return self._abort("q<q_min m2", filled, cash, comm, t_f2 - t0, parts)
+                if frac2 < 1.0:
+                    # métal invendu -> liquidation Convention A à la quote
+                    # fraîche de la dénomination de départ
+                    cash += (1 - frac2) * liq_metal()
+                    parts += 1
+                qty = qty_m * frac2 * q_now2
+                comm += METAL_COMM.get(s2, 0.0)
+                filled += 1
+                node = to
+                t = t_f2
+                continue
             s = FX[ei]; base_i, quote_i = self.fe[s]
             d = +1 if node == base_i else -1
             jt0, bs0, as0, _ = self.quote_at(s, t)

@@ -66,10 +66,16 @@
 - `fetch_poc.py` : `.bi5` direct Python (pas de dukascopy-node), 3 jours (22/23/26 oct. 2026),
   28 FX d'abord puis 32 bouts ; ledger `/opt/arb/data/poc_ledger.json` ; diviseur auto-détecté ;
   503 → backoff 30/90/300/600 s ; 403/429 → pause 2 h ; timeout 60 s (réponses ~18 s).
-- `poc_engine.py` : replay événementiel forward-fill ; 10 360 chemins ouverts (2 072 FX + 8 288
-  terminaisons bout — split STRUCTUREL `P_HASB`, pas l'état de chargement) ; `eval_at` vectorisé
-  (IDX_FX d'abord, full si candidat) ; `exec_seq` E1–E9 (fill au dernier tick ≤ t_fill, IOC
-  τ_slip, partiel, unwind, bout non chargé -> None, jamais préfixe FX) ; `scan` -> `cand.npz`.
+- `poc_engine.py` : replay événementiel forward-fill ; par défaut 2 072 chemins FX purs
+  (terminaisons bout désactivées : `INCLUDE_TERMINAL_BOUTS=False`, dominées 0/1 029 811
+  argmax) ; `mixed=True` opt-in ajoute les sauts métal INTÉRIEURS XAU/XAG
+  (1 hop métal = 1 jambe logique, 2 ordres séquentiels, résiduel en devise —
+  Convention A) → 8 810 chemins ; `eval_at` vectorisé (IDX_FX d'abord, full si
+  candidat) ; `exec_seq` E1–E9 (fill au dernier tick ≤ t_fill, IOC τ_slip, partiel,
+  unwind, liquidation résiduel métal à quote fraîche, jamais préfixe FX) ;
+  `scan` -> `cand.npz`. Tests sans data : `test_mixed.py` (P_S==p_start, cohérence
+  prix, parité FX-only). ATTENTION : `P_S` doit toujours valoir `p_start` — une
+  jambe 0 métal le laissait à USD → faux nets ~+10 k (corrigé, test T1).
 - `poc_optuna.py` : `scan` | `smoke` | `run N` | `holdout` | `importance`. Inventaire Optuna v5
   appliqué : split temporel (jours 22+23 in-sample = steps MedianPruner, jour 26 hold-out évalué
   UNE fois), `set_constraint` min_trades>=10 + abort_rate<=30 %, `enqueue_trial` défauts du doc,

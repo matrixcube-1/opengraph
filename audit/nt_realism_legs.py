@@ -110,7 +110,11 @@ ap.add_argument("--perf", action="store_true",
 ap.add_argument("--gcfreeze", action="store_true",
                 help="gc.freeze() apres chargement des ticks")
 ap.add_argument("--out", type=str, default=None)
+ap.add_argument("--ddd-min", type=float, default=None,
+                help="override P['ddd_min'] (seuil declenchement)")
 args = ap.parse_args()
+if args.ddd_min is not None:
+    P["ddd_min"] = args.ddd_min
 OUT = Path(args.out) if args.out else POC / f"nt_{args.mode}_{args.lat_ms:g}.json"
 
 

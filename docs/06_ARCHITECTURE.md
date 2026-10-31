@@ -349,3 +349,26 @@ holdout 27/10 post-hoc **+11,25 $ / 6 execs** vs −60,65 / 134 execs
 - Hawkes MLE / `p_persist` — sémantique à finaliser, épisodes exportés.
 - Porte à hystérésis : implémentée, non activée sur le déclenchement
   (coût d'opportunité mesuré) — disponible en overlay de risque.
+
+## 10.1 Séquence de câblage — quand et pourquoi pas maintenant
+
+```
+MAINTENANT   → adapter cTrader + shadow live (le bottleneck réel)
+PUIS         → Hawkes MLE (stats offline, épisodes déjà exportés)
+             → porte hystérésis en overlay risque / kill-switch
+             → collecte μ/σ par chemin sur flux réel
+ENSUITE      → concurrence multi-chemins → HiGHS devient pertinent
+```
+
+- **Porte à hystérésis** : câblage technique trivial (crate testée,
+  ArcSwap) ; blocage *stratégique* — elle ferme sur haute tension =
+  jours de récolte. Rôle : overlay de risque, pas gate de trading.
+- **Hawkes / `p_persist`** : auto-contenu (estimateur MLE offline, zéro
+  changement moteur) ; sémantique événement/résorption à finaliser (M4).
+- **HiGHS / Kelly / ES** : blocages de *conception*, pas de code —
+  (a) estimation `μ_USD`/`σ²_USD` par chemin non spécifiée (μ<0 → LP
+  infaisable ; σ²→0 → explosion ; 2 072 chemins épars → pooling
+  hiérarchique par jambes requis) ; (b) `t_free` sérialise : une seule
+  position à la fois → le sizing multi-chemins n'a rien à allouer tant
+  que la concurrence n'est pas autorisée. `g_π` s'appliquera sur les
+  seconds membres du LP quand la couche existera.

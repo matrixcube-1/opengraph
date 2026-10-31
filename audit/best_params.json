@@ -1,0 +1,24 @@
+{
+  "best_pnl": 1131005.537733688,
+  "params": {
+    "fresh_ms": 500.0,
+    "spread_cap": 1.7,
+    "comm_scale": 1.0,
+    "ddd_min": 0.0,
+    "lat_ms": 2.5,
+    "tau_slip_bp": 0.8,
+    "q_min": 0.5,
+    "cooldown_s": 0.0
+  },
+  "attrs": {
+    "trades": 186103,
+    "aborts": 4,
+    "pnl_total": 1131005.54
+  },
+  "constraints": {
+    "abort_rate": -0.29997850652595603,
+    "min_trades": -186093.0
+  },
+  "n_trials": 150,
+  "elapsed": 43439.79538464546
+}

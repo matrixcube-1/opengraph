@@ -194,6 +194,38 @@ pub fn decode_payload<'a, M: quacky::MessageRead<'a>>(
     M::from_reader(&mut r, p).map_err(|e| ClientError::Proto(e.to_string()))
 }
 
+/// RPC séquentiel : draine `inbound` en résolvant les pendings jusqu'à
+/// la réponse attendue. Utilisé au bootstrap (auth, symbols, subscribe) —
+/// les spots précoces sont ignorés (la souscription n'est pas encore faite).
+pub async fn rpc<M: quacky::MessageWrite>(
+    handle: &mut NetHandle,
+    ptype: crate::proto::spotware::ProtoOAPayloadType,
+    msg: &M,
+    timeout: Duration,
+    what: &'static str,
+) -> Result<ProtoMessage<'static>, ClientError> {
+    let (_cmid, mut rx) = send_request(handle, ptype, msg).await?;
+    tokio::time::timeout(timeout, async {
+        loop {
+            tokio::select! {
+                biased;
+                r = &mut rx => {
+                    return r.map_err(|_| ClientError::Dead("pending fermé".into()));
+                }
+                inc = handle.inbound.recv() => match inc {
+                    Some(Incoming::Msg(m)) => {
+                        dispatch_response(handle, m);
+                    }
+                    Some(Incoming::Dead(d)) => return Err(ClientError::Dead(d)),
+                    None => return Err(ClientError::Dead("inbound fermé".into())),
+                },
+            }
+        }
+    })
+    .await
+    .map_err(|_| ClientError::Timeout(what))?
+}
+
 /// Route une enveloppe : résout le pending si `clientMsgId` attendu ;
 /// retourne true si le message a été consommé par une requête.
 pub fn dispatch_response(handle: &NetHandle, msg: ProtoMessage<'static>) -> bool {
@@ -216,6 +248,8 @@ mod tests {
 
     /// Serveur mock : attend une trame auth, répond 2103 avec le même
     /// clientMsgId, puis pousse un SpotEvent non sollicité.
+    /// `send_payload` ajoute l'en-tête 4B : on passe l'enveloppe protobuf
+    /// seule (`encode_msg`, pas `frame` — sinon double-trame).
     async fn mock_flow(peer: &mut MockPeer) {
         let raw = peer.recv_frame().await.unwrap();
         let req = decode_msg(&raw[4..]).unwrap();
@@ -231,7 +265,7 @@ mod tests {
             encode_payload(&res).unwrap(),
             Some(&cmid),
         );
-        peer.send_payload(frame(&env).unwrap());
+        peer.send_payload(crate::codec::encode_msg(&env).unwrap());
         // événement non sollicité
         let spot = ProtoOASpotEvent {
             payloadType: Some(ProtoOAPayloadType::PROTO_OA_SPOT_EVENT),
@@ -246,7 +280,7 @@ mod tests {
             encode_payload(&spot).unwrap(),
             None,
         );
-        peer.send_payload(frame(&env).unwrap());
+        peer.send_payload(crate::codec::encode_msg(&env).unwrap());
     }
 
     #[tokio::test]

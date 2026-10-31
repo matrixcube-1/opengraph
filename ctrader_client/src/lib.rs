@@ -25,6 +25,7 @@
 
 pub mod auth;
 pub mod codec;
+mod e2e_test;
 pub mod config;
 pub mod err;
 pub mod exec;

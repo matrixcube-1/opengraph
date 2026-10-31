@@ -14,6 +14,16 @@ use std::borrow::Cow;
 // module s'appelle `spotware` — alias requis pour la compilation.
 use self as spotware;
 
+// Patch de compatibilité quacky 0.2 : le générateur code pour la sémantique
+// protobuf-rs où `Writer::write_message` préfixe la longueur varint ; quacky
+// n'écrit QUE le contenu (prévu pour l'enveloppe top-level). Tout sous-message
+// encodé sans longueur est corrompu — ce helper rétablit `len` + contenu.
+#[inline(always)]
+fn w_msg<W: WriterBackend, M: MessageWrite>(w: &mut Writer<W>, m: &M) -> Result<()> {
+    w.write_varint(m.get_size() as u64)?;
+    m.write_message(w)
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ProtoPayloadType {
     PROTO_MESSAGE = 5,
@@ -1957,7 +1967,7 @@ impl<'a> MessageWrite for ProtoOASymbol<'a> {
         self.minVolume.as_ref().map_or(Ok(()), |&m| w.write_with_tag(80, |w| w.write_int64(*&m)))?;
         self.stepVolume.as_ref().map_or(Ok(()), |&m| w.write_with_tag(88, |w| w.write_int64(*&m)))?;
         self.maxExposure.as_ref().map_or(Ok(()), |&m| w.write_with_tag(96, |w| w.write_uint64(*&m)))?;
-        for s in &self.schedule { w.write_with_tag(106, |w| w.write_message(s))?; }
+        for s in &self.schedule { w.write_with_tag(106, |w| w_msg(w, s))?; }
         self.commissionType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(120, |w| w.write_enum(*&m as i32)))?;
         self.slDistance.as_ref().map_or(Ok(()), |&m| w.write_with_tag(128, |w| w.write_uint32(*&m)))?;
         self.tpDistance.as_ref().map_or(Ok(()), |&m| w.write_with_tag(136, |w| w.write_uint32(*&m)))?;
@@ -1975,7 +1985,7 @@ impl<'a> MessageWrite for ProtoOASymbol<'a> {
         self.lotSize.as_ref().map_or(Ok(()), |&m| w.write_with_tag(240, |w| w.write_int64(*&m)))?;
         self.preciseTradingCommissionRate.as_ref().map_or(Ok(()), |&m| w.write_with_tag(248, |w| w.write_int64(*&m)))?;
         self.preciseMinCommission.as_ref().map_or(Ok(()), |&m| w.write_with_tag(256, |w| w.write_int64(*&m)))?;
-        for s in &self.holiday { w.write_with_tag(266, |w| w.write_message(s))?; }
+        for s in &self.holiday { w.write_with_tag(266, |w| w_msg(w, s))?; }
         self.pnlConversionFeeRate.as_ref().map_or(Ok(()), |&m| w.write_with_tag(272, |w| w.write_int32(*&m)))?;
         self.leverageId.as_ref().map_or(Ok(()), |&m| w.write_with_tag(280, |w| w.write_int64(*&m)))?;
         self.swapPeriod.as_ref().map_or(Ok(()), |&m| w.write_with_tag(288, |w| w.write_int32(*&m)))?;
@@ -2378,7 +2388,7 @@ impl<'a> MessageWrite for ProtoOAPosition<'a> {
 
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         w.write_with_tag(8, |w| w.write_int64(*&self.positionId))?;
-        w.write_with_tag(18, |w| w.write_message(&self.tradeData))?;
+        w.write_with_tag(18, |w| w_msg(w, &self.tradeData))?;
         w.write_with_tag(24, |w| w.write_enum(*&self.positionStatus as i32))?;
         w.write_with_tag(32, |w| w.write_int64(*&self.swap))?;
         self.price.as_ref().map_or(Ok(()), |&m| w.write_with_tag(41, |w| w.write_double(*&m)))?;
@@ -2490,7 +2500,7 @@ impl<'a> MessageWrite for ProtoOAOrder<'a> {
 
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         w.write_with_tag(8, |w| w.write_int64(*&self.orderId))?;
-        w.write_with_tag(18, |w| w.write_message(&self.tradeData))?;
+        w.write_with_tag(18, |w| w_msg(w, &self.tradeData))?;
         w.write_with_tag(24, |w| w.write_enum(*&self.orderType as i32))?;
         w.write_with_tag(32, |w| w.write_enum(*&self.orderStatus as i32))?;
         self.expirationTimestamp.as_ref().map_or(Ok(()), |&m| w.write_with_tag(48, |w| w.write_int64(*&m)))?;
@@ -2735,7 +2745,7 @@ impl MessageWrite for ProtoOADeal {
         self.marginRate.as_ref().map_or(Ok(()), |&m| w.write_with_tag(105, |w| w.write_double(*&m)))?;
         self.commission.as_ref().map_or(Ok(()), |&m| w.write_with_tag(112, |w| w.write_int64(*&m)))?;
         self.baseToUsdConversionRate.as_ref().map_or(Ok(()), |&m| w.write_with_tag(121, |w| w.write_double(*&m)))?;
-        self.closePositionDetail.as_ref().map_or(Ok(()), |m| w.write_with_tag(130, |w| w.write_message(m)))?;
+        self.closePositionDetail.as_ref().map_or(Ok(()), |m| w.write_with_tag(130, |w| w_msg(w, m)))?;
         self.moneyDigits.as_ref().map_or(Ok(()), |&m| w.write_with_tag(136, |w| w.write_uint32(*&m)))?;
         Ok(())
     }
@@ -3693,11 +3703,11 @@ impl<'a> MessageWrite for ProtoOAExecutionEvent<'a> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
         w.write_with_tag(24, |w| w.write_enum(*&self.executionType as i32))?;
-        self.position.as_ref().map_or(Ok(()), |m| w.write_with_tag(34, |w| w.write_message(m)))?;
-        self.order.as_ref().map_or(Ok(()), |m| w.write_with_tag(42, |w| w.write_message(m)))?;
-        self.deal.as_ref().map_or(Ok(()), |m| w.write_with_tag(50, |w| w.write_message(m)))?;
-        self.bonusDepositWithdraw.as_ref().map_or(Ok(()), |m| w.write_with_tag(58, |w| w.write_message(m)))?;
-        self.depositWithdraw.as_ref().map_or(Ok(()), |m| w.write_with_tag(66, |w| w.write_message(m)))?;
+        self.position.as_ref().map_or(Ok(()), |m| w.write_with_tag(34, |w| w_msg(w, m)))?;
+        self.order.as_ref().map_or(Ok(()), |m| w.write_with_tag(42, |w| w_msg(w, m)))?;
+        self.deal.as_ref().map_or(Ok(()), |m| w.write_with_tag(50, |w| w_msg(w, m)))?;
+        self.bonusDepositWithdraw.as_ref().map_or(Ok(()), |m| w.write_with_tag(58, |w| w_msg(w, m)))?;
+        self.depositWithdraw.as_ref().map_or(Ok(()), |m| w.write_with_tag(66, |w| w_msg(w, m)))?;
         self.errorCode.as_ref().map_or(Ok(()), |m| w.write_with_tag(74, |w| w.write_string(&m)))?;
         self.isServerEvent.as_ref().map_or(Ok(()), |&m| w.write_with_tag(80, |w| w.write_bool(*&m)))?;
         Ok(())
@@ -4052,7 +4062,7 @@ impl<'a> MessageWrite for ProtoOAAssetListRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.asset { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.asset { w.write_with_tag(26, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -4133,8 +4143,8 @@ impl<'a> MessageWrite for ProtoOASymbolsListRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.symbol { w.write_with_tag(26, |w| w.write_message(s))?; }
-        for s in &self.archivedSymbol { w.write_with_tag(34, |w| w.write_message(s))?; }
+        for s in &self.symbol { w.write_with_tag(26, |w| w_msg(w, s))?; }
+        for s in &self.archivedSymbol { w.write_with_tag(34, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -4215,8 +4225,8 @@ impl<'a> MessageWrite for ProtoOASymbolByIdRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.symbol { w.write_with_tag(26, |w| w.write_message(s))?; }
-        for s in &self.archivedSymbol { w.write_with_tag(34, |w| w.write_message(s))?; }
+        for s in &self.symbol { w.write_with_tag(26, |w| w_msg(w, s))?; }
+        for s in &self.archivedSymbol { w.write_with_tag(34, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -4298,7 +4308,7 @@ impl<'a> MessageWrite for ProtoOASymbolsForConversionRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.symbol { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.symbol { w.write_with_tag(26, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -4411,7 +4421,7 @@ impl<'a> MessageWrite for ProtoOAAssetClassListRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.assetClass { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.assetClass { w.write_with_tag(26, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -4485,7 +4495,7 @@ impl<'a> MessageWrite for ProtoOATraderRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        w.write_with_tag(26, |w| w.write_message(&self.trader))?;
+        w.write_with_tag(26, |w| w_msg(w, &self.trader))?;
         Ok(())
     }
 }
@@ -4524,7 +4534,7 @@ impl<'a> MessageWrite for ProtoOATraderUpdatedEvent<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        w.write_with_tag(26, |w| w.write_message(&self.trader))?;
+        w.write_with_tag(26, |w| w_msg(w, &self.trader))?;
         Ok(())
     }
 }
@@ -4605,8 +4615,8 @@ impl<'a> MessageWrite for ProtoOAReconcileRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.position { w.write_with_tag(26, |w| w.write_message(s))?; }
-        for s in &self.order { w.write_with_tag(34, |w| w.write_message(s))?; }
+        for s in &self.position { w.write_with_tag(26, |w| w_msg(w, s))?; }
+        for s in &self.order { w.write_with_tag(34, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -4746,7 +4756,7 @@ impl MessageWrite for ProtoOADealListRes {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.deal { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.deal { w.write_with_tag(26, |w| w_msg(w, s))?; }
         w.write_with_tag(32, |w| w.write_bool(*&self.hasMore))?;
         Ok(())
     }
@@ -4832,7 +4842,7 @@ impl<'a> MessageWrite for ProtoOAOrderListRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.order { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.order { w.write_with_tag(26, |w| w_msg(w, s))?; }
         w.write_with_tag(32, |w| w.write_bool(*&self.hasMore))?;
         Ok(())
     }
@@ -4918,7 +4928,7 @@ impl MessageWrite for ProtoOAExpectedMarginRes {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.margin { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.margin { w.write_with_tag(26, |w| w_msg(w, s))?; }
         self.moneyDigits.as_ref().map_or(Ok(()), |&m| w.write_with_tag(32, |w| w.write_uint32(*&m)))?;
         Ok(())
     }
@@ -5048,7 +5058,7 @@ impl<'a> MessageWrite for ProtoOACashFlowHistoryListRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.depositWithdraw { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.depositWithdraw { w.write_with_tag(26, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -5126,7 +5136,7 @@ impl<'a> MessageWrite for ProtoOAGetAccountListByAccessTokenRes<'a> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(18, |w| w.write_string(&self.accessToken))?;
         self.permissionScope.as_ref().map_or(Ok(()), |&m| w.write_with_tag(24, |w| w.write_enum(*&m as i32)))?;
-        for s in &self.ctidTraderAccount { w.write_with_tag(34, |w| w.write_message(s))?; }
+        for s in &self.ctidTraderAccount { w.write_with_tag(34, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -5335,7 +5345,7 @@ impl MessageWrite for ProtoOASpotEvent {
         w.write_with_tag(24, |w| w.write_int64(*&self.symbolId))?;
         self.bid.as_ref().map_or(Ok(()), |&m| w.write_with_tag(32, |w| w.write_uint64(*&m)))?;
         self.ask.as_ref().map_or(Ok(()), |&m| w.write_with_tag(40, |w| w.write_uint64(*&m)))?;
-        for s in &self.trendbar { w.write_with_tag(50, |w| w.write_message(s))?; }
+        for s in &self.trendbar { w.write_with_tag(50, |w| w_msg(w, s))?; }
         self.sessionClose.as_ref().map_or(Ok(()), |&m| w.write_with_tag(56, |w| w.write_uint64(*&m)))?;
         self.timestamp.as_ref().map_or(Ok(()), |&m| w.write_with_tag(64, |w| w.write_int64(*&m)))?;
         Ok(())
@@ -5590,7 +5600,7 @@ impl MessageWrite for ProtoOAGetTrendbarsRes {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
         w.write_with_tag(24, |w| w.write_enum(*&self.period as i32))?;
-        for s in &self.trendbar { w.write_with_tag(42, |w| w.write_message(s))?; }
+        for s in &self.trendbar { w.write_with_tag(42, |w| w_msg(w, s))?; }
         self.symbolId.as_ref().map_or(Ok(()), |&m| w.write_with_tag(48, |w| w.write_int64(*&m)))?;
         Ok(())
     }
@@ -5684,7 +5694,7 @@ impl MessageWrite for ProtoOAGetTickDataRes {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.tickData { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.tickData { w.write_with_tag(26, |w| w_msg(w, s))?; }
         w.write_with_tag(32, |w| w.write_bool(*&self.hasMore))?;
         Ok(())
     }
@@ -5755,7 +5765,7 @@ impl MessageWrite for ProtoOAGetCtidProfileByTokenRes {
 
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
-        w.write_with_tag(18, |w| w.write_message(&self.profile))?;
+        w.write_with_tag(18, |w| w_msg(w, &self.profile))?;
         Ok(())
     }
 }
@@ -5809,7 +5819,7 @@ impl MessageWrite for ProtoOADepthEvent {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
         w.write_with_tag(24, |w| w.write_uint64(*&self.symbolId))?;
-        for s in &self.newQuotes { w.write_with_tag(34, |w| w.write_message(s))?; }
+        for s in &self.newQuotes { w.write_with_tag(34, |w| w_msg(w, s))?; }
         if !self.deletedQuotes.is_empty() {
             w.write_with_tag(42, |w| {
                 let total: u64 = self.deletedQuotes.iter().map(|&m| sizeof_varint(m as u64) as u64).sum();
@@ -6041,7 +6051,7 @@ impl<'a> MessageWrite for ProtoOASymbolCategoryListRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.symbolCategory { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.symbolCategory { w.write_with_tag(26, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -6216,7 +6226,7 @@ impl MessageWrite for ProtoOAMarginCallListRes {
 
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
-        for s in &self.marginCall { w.write_with_tag(18, |w| w.write_message(s))?; }
+        for s in &self.marginCall { w.write_with_tag(18, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -6255,7 +6265,7 @@ impl MessageWrite for ProtoOAMarginCallUpdateReq {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        w.write_with_tag(26, |w| w.write_message(&self.marginCall))?;
+        w.write_with_tag(26, |w| w_msg(w, &self.marginCall))?;
         Ok(())
     }
 }
@@ -6325,7 +6335,7 @@ impl MessageWrite for ProtoOAMarginCallUpdateEvent {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        w.write_with_tag(26, |w| w.write_message(&self.marginCall))?;
+        w.write_with_tag(26, |w| w_msg(w, &self.marginCall))?;
         Ok(())
     }
 }
@@ -6364,7 +6374,7 @@ impl MessageWrite for ProtoOAMarginCallTriggerEvent {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        w.write_with_tag(26, |w| w.write_message(&self.marginCall))?;
+        w.write_with_tag(26, |w| w_msg(w, &self.marginCall))?;
         Ok(())
     }
 }
@@ -6442,7 +6452,7 @@ impl MessageWrite for ProtoOAGetDynamicLeverageByIDRes {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        w.write_with_tag(26, |w| w.write_message(&self.leverage))?;
+        w.write_with_tag(26, |w| w_msg(w, &self.leverage))?;
         Ok(())
     }
 }
@@ -6618,7 +6628,7 @@ impl MessageWrite for ProtoOADynamicLeverage {
 
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         w.write_with_tag(8, |w| w.write_int64(*&self.leverageId))?;
-        for s in &self.tiers { w.write_with_tag(18, |w| w.write_message(s))?; }
+        for s in &self.tiers { w.write_with_tag(18, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -6781,7 +6791,7 @@ impl MessageWrite for ProtoOADealListByPositionIdRes {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.deal { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.deal { w.write_with_tag(26, |w| w_msg(w, s))?; }
         w.write_with_tag(32, |w| w.write_bool(*&self.hasMore))?;
         Ok(())
     }
@@ -6863,8 +6873,8 @@ impl<'a> MessageWrite for ProtoOAOrderDetailsRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        w.write_with_tag(26, |w| w.write_message(&self.order))?;
-        for s in &self.deal { w.write_with_tag(34, |w| w.write_message(s))?; }
+        w.write_with_tag(26, |w| w_msg(w, &self.order))?;
+        for s in &self.deal { w.write_with_tag(34, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -6953,7 +6963,7 @@ impl<'a> MessageWrite for ProtoOAOrderListByPositionIdRes<'a> {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.order { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.order { w.write_with_tag(26, |w| w_msg(w, s))?; }
         w.write_with_tag(32, |w| w.write_bool(*&self.hasMore))?;
         Ok(())
     }
@@ -7035,8 +7045,8 @@ impl MessageWrite for ProtoOADealOffsetListRes {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.offsetBy { w.write_with_tag(26, |w| w.write_message(s))?; }
-        for s in &self.offsetting { w.write_with_tag(34, |w| w.write_message(s))?; }
+        for s in &self.offsetBy { w.write_with_tag(26, |w| w_msg(w, s))?; }
+        for s in &self.offsetting { w.write_with_tag(34, |w| w_msg(w, s))?; }
         Ok(())
     }
 }
@@ -7113,7 +7123,7 @@ impl MessageWrite for ProtoOAGetPositionUnrealizedPnLRes {
     fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {
         self.payloadType.as_ref().map_or(Ok(()), |&m| w.write_with_tag(8, |w| w.write_enum(*&m as i32)))?;
         w.write_with_tag(16, |w| w.write_int64(*&self.ctidTraderAccountId))?;
-        for s in &self.positionUnrealizedPnL { w.write_with_tag(26, |w| w.write_message(s))?; }
+        for s in &self.positionUnrealizedPnL { w.write_with_tag(26, |w| w_msg(w, s))?; }
         w.write_with_tag(32, |w| w.write_uint32(*&self.moneyDigits))?;
         Ok(())
     }

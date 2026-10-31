@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use quacky::MessageWrite;
 
 use ctrader_client::auth;
 use ctrader_client::codec::envelope;
@@ -24,7 +23,7 @@ use ctrader_client::exec::{settle, unwind_intent, LegOutcome, PathExec, ProtoTra
 use ctrader_client::heartbeat::{heartbeat_msg, Backoff, HB_SEND, HB_WATCHDOG};
 use ctrader_client::journal::{JEvent, Journal};
 use ctrader_client::net::{
-    connect, decode_payload, dispatch_response, encode_payload, send_request, spawn, Incoming,
+    connect, decode_payload, dispatch_response, encode_payload, rpc, spawn, Incoming,
     NetHandle,
 };
 use ctrader_client::orders::{
@@ -59,38 +58,6 @@ fn owned_envelope(ptype: ProtoOAPayloadType, payload: Vec<u8>) -> ProtoMessage<'
 }
 
 // ----------------------------------------------------------- bootstrap
-
-/// RPC séquentiel pendant le bootstrap : draine `inbound` en résolvant
-/// les pendings jusqu'à la réponse attendue (spots précoces ignorés —
-/// la souscription n'est pas encore faite).
-async fn rpc<M: MessageWrite>(
-    handle: &mut NetHandle,
-    ptype: ProtoOAPayloadType,
-    msg: &M,
-    timeout: Duration,
-    what: &'static str,
-) -> Result<ProtoMessage<'static>, ClientError> {
-    let (_cmid, mut rx) = send_request(handle, ptype, msg).await?;
-    tokio::time::timeout(timeout, async {
-        loop {
-            tokio::select! {
-                biased;
-                r = &mut rx => {
-                    return r.map_err(|_| ClientError::Dead("pending fermé".into()));
-                }
-                inc = handle.inbound.recv() => match inc {
-                    Some(Incoming::Msg(m)) => {
-                        dispatch_response(handle, m);
-                    }
-                    Some(Incoming::Dead(d)) => return Err(ClientError::Dead(d)),
-                    None => return Err(ClientError::Dead("inbound fermé".into())),
-                },
-            }
-        }
-    })
-    .await
-    .map_err(|_| ClientError::Timeout(what))?
-}
 
 /// Chaîne complète d'amorçage ; retourne `(ctid, SymTable)` prêts à trader.
 async fn bootstrap(

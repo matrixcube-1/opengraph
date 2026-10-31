@@ -259,7 +259,7 @@ pub fn unwind_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opengraph::engine::{Engine, SymbolSeries};
+    use opengraph::engine::Engine;
     use opengraph::paths::build_tables;
     use opengraph::universe::{ci, FX};
 

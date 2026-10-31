@@ -76,8 +76,7 @@ pub fn frame_payload<M: MessageWrite>(
 mod tests {
     use super::*;
     use crate::proto::spotware::{
-        ProtoHeartbeatEvent, ProtoOAPayloadType, ProtoOAApplicationAuthReq,
-        ProtoOASpotEvent, ProtoPayloadType,
+        ProtoOAPayloadType, ProtoOAApplicationAuthReq, ProtoOASpotEvent, ProtoPayloadType,
     };
 
     #[test]

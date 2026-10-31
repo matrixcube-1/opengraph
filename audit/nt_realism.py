@@ -103,6 +103,8 @@ ap.add_argument("--kq", type=float, default=0.5,
 ap.add_argument("--step", type=int, default=20)
 ap.add_argument("--days", type=str, default=None,
                 help="sous-ensemble de DAYS, csv — filtre ticks ET candidats")
+ap.add_argument("--cand", type=str, default="cand.npz",
+                help="fichier candidats dans POC (holdout: cand_holdout.npz)")
 ap.add_argument("--perf", action="store_true",
                 help="mesures ns (calc/e2e) + RSS")
 ap.add_argument("--gcfreeze", action="store_true",
@@ -423,9 +425,9 @@ def main():
         hi = timegm(strptime(DAYS[-1], "%Y-%m-%d")) * 1000 + 86_400_000
     else:
         lo, hi = None, None
-    z = np.load(POC / "cand.npz")
+    z = np.load(POC / args.cand)
     cands = z["cands"]
-    assert np.all(np.diff(cands[:, 0]) >= 0), "cand.npz non chronologique"
+    assert np.all(np.diff(cands[:, 0]) >= 0), f"{args.cand} non chronologique"
     if lo is not None:
         cands = cands[(cands[:, 0] >= lo) & (cands[:, 0] < hi)]
 

@@ -1,0 +1,30 @@
+# ctrader_client — exemple de configuration (schéma réel : config/ctrader.toml)
+# Secrets — JAMAIS dans ce fichier. Variables d'environnement obligatoires :
+#   CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET / CTRADER_ACCESS_TOKEN
+#   CTRADER_REFRESH_TOKEN (optionnel — refresh 2173)
+# App à créer sur https://openapi.ctrader.com -> clientId/secret + accessToken
+# (compte NETTED — le garde-fou refuse HEDGED au démarrage).
+
+# "demo" | "live" — hôtes séparés demo./live.ctraderapi.com:5035 (protobuf)
+env = "demo"
+
+# "detect" = journalise les opportunités, ZÉRO ordre (défaut sûr, shadow live)
+# "trade"  = envoie les ordres réels — exige ctid_trader_account_id != 0
+mode = "detect"
+
+# ctidTraderAccountId du compte NETTED ; 0 = résolu via GetAccountsByAccessToken
+ctid_trader_account_id = 0
+
+journal_dir = "journal"
+require_netted = true
+reconcile_s = 30
+
+# Paramètres moteur figés (P) — holdout-validés, ne pas modifier sans recalibrage
+[engine]
+fresh_ms = 500.0
+spread_cap = 1.7
+comm_scale = 1.0
+ddd_min = 2.5          # USD — plateau 2-4 $, holdout +11.25 $ / 6 execs
+q_min = 0.5
+leg_timeout_ms = 2000  # IOC résout << 1 s ; sinon abort + unwind
+req_timeout_s = 10

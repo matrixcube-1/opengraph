@@ -41,3 +41,14 @@ clean_*.json
 check_*.json
 ref_*.json
 fh.b64
+
+# Secrets et runtime ctrader_client (ne JAMAIS commiter)
+ctrader_client/config.toml
+journal/
+logs/
+
+# Repo tiers vendorisé (src/proto/) — sources en local seulement
+_vendor_ctrader/
+# Artefacts régénérables
+audit/_*.txt
+audit/trades_extract.json

@@ -1,0 +1,33 @@
+# ctrader_client — configuration
+# Secrets (JAMAIS ici) : variables d'environnement
+#   CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET / CTRADER_ACCESS_TOKEN
+#   CTRADER_REFRESH_TOKEN (optionnel, pour 2173)
+
+# "demo" | "live" — hôtes séparés (demo./live.ctraderapi.com:5035)
+env = "demo"
+
+# "detect" = journalise les opportunités, zéro ordre (défaut sûr)
+# "trade"  = envoie les ordres réels sur le compte
+mode = "detect"
+
+# ctidTraderAccountId du compte ; 0 = résolu via la liste du token
+ctid_trader_account_id = 0
+
+# Dossier des journaux JSONL (un fichier par jour UTC)
+journal_dir = "journal"
+
+# Refus de trader si le compte n'est pas NETTED (garde-fou 2121/2122)
+require_netted = true
+
+# Reconcile positions toutes les N secondes
+reconcile_s = 30
+
+# Paramètres moteur figés (P) — ne pas modifier sans recalibrage
+[engine]
+fresh_ms = 500.0
+spread_cap = 1.7
+comm_scale = 1.0
+ddd_min = 2.5          # seuil plateau retenu (holdout validé)
+q_min = 0.5
+leg_timeout_ms = 2000  # IOC doit résoudre << 1 s ; sinon abort + unwind
+req_timeout_s = 10

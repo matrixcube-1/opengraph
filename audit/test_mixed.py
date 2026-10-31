@@ -17,15 +17,24 @@ NOTIONAL = pe.NOTIONAL
 
 
 def _mk_engine(syms, quotes):
-    """Engine synthétique : pas de CSV — bid/ask/last_t injectés."""
+    """Engine synthétique : pas de CSV — bid/ask/last_t injectés.
+    quotes : {sym: (bid, ask)} ou {sym: (ts_array, bid_array, ask_array)}."""
     e = pe.Engine.__new__(pe.Engine)
     e.mixed = True
     e.syms = syms
-    e.data = {s: (np.array([0]), np.array([quotes[s][0]]),
-                 np.array([quotes[s][1]]), np.array([0.0])) for s in syms}
+    e.data = {}
+    for s in syms:
+        q = quotes[s]
+        if len(q) == 2:
+            e.data[s] = (np.array([0]), np.array([q[0]]),
+                         np.array([q[1]]), np.array([0.0]))
+        else:
+            e.data[s] = (np.asarray(q[0]), np.asarray(q[1]),
+                         np.asarray(q[2]), np.zeros(len(q[0])))
     e.slist = sorted(e.data)
     e.sidx = {s: i for i, s in enumerate(e.slist)}
-    e.med_spread = {s: quotes[s][1] - quotes[s][0] for s in syms}
+    e.med_spread = {s: float(np.median(e.data[s][2] - e.data[s][1]))
+                    for s in syms}
     e.MED = np.array([e.med_spread[s] for s in e.slist])
     e.IS_FX = np.array([s in set(pe.FX) for s in e.slist])
     e.B_SI = np.array([e.sidx[s] for s in pe.BOUTS if s in e.sidx])
@@ -36,9 +45,10 @@ def _mk_engine(syms, quotes):
     e.bid = np.full(n, np.nan); e.ask = np.full(n, np.nan)
     e.last_t = np.full(n, -1e18)
     e.pos = {s: 0 for s in e.data}
-    for s, (b, a) in quotes.items():
+    for s in syms:
         i = e.sidx[s]
-        e.bid[i] = b; e.ask[i] = a; e.last_t[i] = 0
+        e.bid[i] = e.data[s][1][-1]; e.ask[i] = e.data[s][2][-1]
+        e.last_t[i] = e.data[s][0][-1]
     return e
 
 
@@ -90,8 +100,45 @@ def test_metal_hop_is_one_leg():
     assert e.p_start[pi] == CI["EUR"] or e.P_S[pi] == CI[pe.CURR[e.p_start[pi]]]
 
 
+def test_exec_metal_hop_two_orders():
+    """Saut USD -XAU-> EUR : 2 fills, résiduel devise, pnl ~ -2 demi-spreads."""
+    ts = np.arange(0, 100, 5)
+    n = len(ts)
+    quotes = {
+        "EURUSD": (ts, np.full(n, 1.0999), np.full(n, 1.1001)),
+        "XAUUSD": (ts, np.full(n, 2599.5), np.full(n, 2600.5)),
+        "XAUEUR": (ts, np.full(n, 2363.0), np.full(n, 2364.3)),
+    }
+    e = _mk_engine(list(quotes), quotes)
+    pi = e.paths.index((("X", "XAU", CI["EUR"]),))
+    assert e.p_start[pi] == CI["USD"]
+    r = e.exec_seq(0, pi, lat_ms=5, tau_slip_bp=24.0, q_min=0.5)
+    assert r is not None and r["res"] == "done", r
+    assert r["fills"] == 2, f"hop metal = 2 ordres, fills={r['fills']}"
+    # attendu : 100k USD -> oz a 2600.5 -> EUR a 2363.0 -> ~99.98k USD
+    exp = NOTIONAL / 2600.5 * 2363.0 * 1.10 - NOTIONAL
+    assert abs(r["pnl"] - exp) < 5.0, f"pnl={r['pnl']:.2f} vs attendu {exp:.2f}"
+
+
+def test_exec_metal_kill_ioc_liquidates():
+    """Saut qui saute >3*tau entre send et fill -> abort + liquidation metal."""
+    ts = np.arange(0, 100, 5)
+    n = len(ts)
+    xau_ask = np.full(n, 2600.5); xau_ask[1:] = 2700.0   # gap >72bp au fill
+    quotes = {
+        "EURUSD": (ts, np.full(n, 1.0999), np.full(n, 1.1001)),
+        "XAUUSD": (ts, np.full(n, 2599.5), xau_ask),
+        "XAUEUR": (ts, np.full(n, 2363.0), np.full(n, 2364.3)),
+    }
+    e = _mk_engine(list(quotes), quotes)
+    pi = e.paths.index((("X", "XAU", CI["EUR"]),))
+    r = e.exec_seq(0, pi, lat_ms=5, tau_slip_bp=24.0, q_min=0.5)
+    assert r is not None and r["res"] == "abort" and "kill" in r["why"], r
+
+
 if __name__ == "__main__":
     for f in [test_p_s_equals_p_start, test_consistent_prices_no_profit,
-              test_enum_paths_fx_only_unchanged, test_metal_hop_is_one_leg]:
+              test_enum_paths_fx_only_unchanged, test_metal_hop_is_one_leg,
+              test_exec_metal_hop_two_orders, test_exec_metal_kill_ioc_liquidates]:
         f()
         print(f"{f.__name__} OK")

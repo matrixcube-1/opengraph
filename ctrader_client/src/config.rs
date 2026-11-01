@@ -48,7 +48,7 @@ pub struct EngineParams {
     pub spread_cap: f64,
     #[serde(default = "d_comm")]
     pub comm_scale: f64,
-    /// Seuil de déclenchement net USD (plateau retenu : 2.5 $).
+    /// Seuil de déclenchement net USD (calibration trial #87 : 2.66 $).
     #[serde(default = "d_ddd")]
     pub ddd_min: f64,
     #[serde(default = "d_qmin")]
@@ -61,16 +61,16 @@ pub struct EngineParams {
     pub req_timeout_s: u64,
 }
 fn d_fresh() -> f64 {
-    500.0
+    909.0
 }
 fn d_cap() -> f64 {
-    1.7
+    1.76
 }
 fn d_comm() -> f64 {
-    1.0
+    1.10
 }
 fn d_ddd() -> f64 {
-    2.5
+    2.66
 }
 fn d_qmin() -> f64 {
     0.5
@@ -176,10 +176,10 @@ mod tests {
     #[test]
     fn default_params_match_frozen_p() {
         let p = EngineParams::default();
-        assert_eq!(p.fresh_ms, 500.0);
-        assert_eq!(p.spread_cap, 1.7);
-        assert_eq!(p.comm_scale, 1.0);
-        assert_eq!(p.ddd_min, 2.5);
+        assert_eq!(p.fresh_ms, 909.0);
+        assert_eq!(p.spread_cap, 1.76);
+        assert_eq!(p.comm_scale, 1.10);
+        assert_eq!(p.ddd_min, 2.66);
         assert_eq!(p.q_min, 0.5);
     }
 
@@ -191,14 +191,14 @@ mod tests {
             ctid_trader_account_id = 12345678
             journal_dir = "/var/log/og"
             [engine]
-            ddd_min = 2.5
+            ddd_min = 3.0
         "#;
         let c: Config = toml::from_str(txt).unwrap();
         assert_eq!(c.env, Env::Demo);
         assert_eq!(c.mode, Mode::Detect);
         assert_eq!(c.ctid_trader_account_id, 12345678);
-        assert_eq!(c.engine.ddd_min, 2.5);
-        assert_eq!(c.engine.fresh_ms, 500.0); // défaut conservé
+        assert_eq!(c.engine.ddd_min, 3.0);
+        assert_eq!(c.engine.fresh_ms, 909.0); // défaut conservé
         assert!(c.require_netted);
     }
 

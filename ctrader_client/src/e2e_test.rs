@@ -164,7 +164,9 @@ async fn venue_script(peer: &mut MockPeer, symbol_ids: &[i64], first_edge: u8) {
         },
         Some(&cmid_of(&m)),
     );
-    let px: u64 = 118_347; // 1.18347 à 5 digits
+    // prix encodés ×1e5 (échelle fixe SpotEvent, pas 10^digits)
+    let px: u64 = (1.18347 * 1e5) as u64; // 118_347 -> 1.18347
+    // event 1 : bid seul (cTrader n'envoie que le côté qui change)
     venue_reply(
         peer,
         ProtoOAPayloadType::PROTO_OA_SPOT_EVENT,
@@ -173,8 +175,23 @@ async fn venue_script(peer: &mut MockPeer, symbol_ids: &[i64], first_edge: u8) {
             ctidTraderAccountId: CTID,
             symbolId: symbol_ids[first_edge as usize],
             bid: Some(px),
-            ask: Some(px + 3),
+            ask: None,
             timestamp: Some(1_793_016_000_000),
+            ..Default::default()
+        },
+        None,
+    );
+    // event 2 : ask seul — le client doit fusionner avec le bid retenu
+    venue_reply(
+        peer,
+        ProtoOAPayloadType::PROTO_OA_SPOT_EVENT,
+        &ProtoOASpotEvent {
+            payloadType: None,
+            ctidTraderAccountId: CTID,
+            symbolId: symbol_ids[first_edge as usize],
+            bid: None,
+            ask: Some(px + 3),
+            timestamp: Some(1_793_016_000_001),
             ..Default::default()
         },
         None,
@@ -359,6 +376,10 @@ async fn e2e_bootstrap_spot_order_reconcile() {
 
     // -- SpotEvent -> Quote -> engine.ingest --
     let mut engine = engine_fixture();
+    // forward-fill par edge, comme `State::last_px` de main.rs :
+    // le 1er event (bid seul) ne produit pas de quote, le 2e (ask seul)
+    // fusionne avec le bid retenu.
+    let mut last: Option<(f64, f64)> = None;
     let quote = loop {
         match tokio::time::timeout(TIMEOUT, handle.inbound.recv())
             .await
@@ -372,12 +393,15 @@ async fn e2e_bootstrap_spot_order_reconcile() {
                 let ev: ProtoOASpotEvent = decode_payload(&m).unwrap();
                 let (e2, si) = st.by_symbol_id(ev.symbolId).unwrap();
                 assert_eq!(e2, edge);
-                break spot_to_quote(&ev, si, 0).unwrap();
+                if let Some(q) = spot_to_quote(&ev, si, &mut last, 0) {
+                    break q;
+                }
             }
             other => panic!("inbound inattendu: {other:?}"),
         }
     };
     assert!((quote.bid - 1.18347).abs() < 1e-9);
+    assert!((quote.ask - 1.18350).abs() < 1e-9);
     // si moteur : fx_si[edge] -> index série trié (comme main.rs)
     let si_idx = engine.fx_si[edge as usize].expect("edge mappé");
     engine.ingest(si_idx, quote.clone());

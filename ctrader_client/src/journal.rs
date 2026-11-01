@@ -197,7 +197,7 @@ mod tests {
             &JEvent::Opportunity {
                 t0: 1,
                 pi: 42,
-                net_usd: 3.14,
+                net_usd: 3.25,
                 ddd_usd: 9.1,
                 start: 5,
                 legs: 2,
@@ -214,7 +214,7 @@ mod tests {
         let l1 = std::fs::read_to_string(&f1).unwrap();
         let l2 = std::fs::read_to_string(&f2).unwrap();
         assert!(l1.contains("\"ev\":\"system\"") && l1.contains("boot"));
-        assert!(l1.contains("\"ev\":\"opportunity\"") && l1.contains("\"net_usd\":3.14"));
+        assert!(l1.contains("\"ev\":\"opportunity\"") && l1.contains("\"net_usd\":3.25"));
         assert!(l2.contains("next day"));
         let _ = std::fs::remove_dir_all(&dir);
     }

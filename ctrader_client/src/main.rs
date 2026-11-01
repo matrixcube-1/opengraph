@@ -203,6 +203,10 @@ struct State {
     flatten_done_today: bool,
     /// `true` après adoption de la baseline venue (post-reconnect).
     recon_seeded: bool,
+    /// Dernier (bid, ask) connu par edge — forward-fill des SpotEvents
+    /// à un seul côté (cTrader n'envoie que le côté qui change). Reset à
+    /// chaque session : le premier event après subscribe porte les deux.
+    last_px: [Option<(f64, f64)>; 28],
 }
 
 impl State {
@@ -221,6 +225,7 @@ impl State {
             last_leg_sent_ms: 0,
             flatten_done_today: false,
             recon_seeded: false,
+            last_px: [None; 28],
         }
     }
 
@@ -728,7 +733,12 @@ async fn handle_frame(
         2131 => {
             let Ok(ev) = decode_payload::<ProtoOASpotEvent>(&msg) else { return };
             let Some((edge, si)) = sym.by_symbol_id(ev.symbolId) else { return };
-            let Some(q) = spot_to_quote(&ev, si, now_ms()) else { return };
+            let Some(q) = spot_to_quote(
+                &ev,
+                si,
+                &mut st.last_px[edge as usize],
+                now_ms(),
+            ) else { return };
             let Some(si_idx) = st.engine.fx_si[edge as usize] else { return };
             let t = q.ts_ms;
             st.engine.ingest(si_idx, q);

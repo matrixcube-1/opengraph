@@ -406,12 +406,15 @@ mod tests {
         let i = unwind_intent(e, ProtoTrade::Sell, 500.0, 165.0, 165.02, &st, "u".into())
             .unwrap();
         let tol = 3.0 * 0.8e-4;
-        assert!((i.limit_px - 165.0 * (1.0 - tol)).abs() < 1e-9);
+        // limite arrondie à 3 digits : SELL floor <= bid*(1-tol), BUY ceil >= ask*(1+tol)
+        assert!(i.limit_px <= 165.0 * (1.0 - tol) + 1e-12);
+        assert!((i.limit_px - 164.960).abs() < 1e-9, "{}", i.limit_px);
         assert_eq!(i.volume, 500 * 100); // centièmes d'unité
         // BUY : acc factice = qty*ask -> qty_base = qty
         let j = unwind_intent(e, ProtoTrade::Buy, 300.0, 165.0, 165.02, &st, "u".into())
             .unwrap();
-        assert!((j.limit_px - 165.02 * (1.0 + tol)).abs() < 1e-9);
+        assert!(j.limit_px >= 165.02 * (1.0 + tol) - 1e-12);
+        assert!((j.limit_px - 165.060).abs() < 1e-9, "{}", j.limit_px);
         assert!((j.qty_base - 300.0).abs() < 1.0);
     }
 }

@@ -74,10 +74,12 @@ pub fn leg_intent(
     {
         return None;
     }
+    // limitPrice arrondi sur la grille `digits` (rejet venue sinon) ;
+    // SELL floor / BUY ceil = au moins aussi agressif que la bande ±tol.
     let (px, qty_base, q_send) = if d == 1 {
-        (bid * (1.0 - IOC_TOL), acc, bid)
+        (si.round_px(bid * (1.0 - IOC_TOL), false), acc, bid)
     } else {
-        (ask * (1.0 + IOC_TOL), acc / ask, ask)
+        (si.round_px(ask * (1.0 + IOC_TOL), true), acc / ask, ask)
     };
     let volume = si.to_volume(qty_base);
     if !(px.is_finite() && px > 0.0) || volume <= 0 {
@@ -250,7 +252,12 @@ mod tests {
             .unwrap();
         assert_eq!(li.d, 1);
         let tol = 3.0 * 0.8e-4;
-        assert!((li.limit_px - 1.18347 * (1.0 - tol)).abs() < 1e-12);
+        // limite arrondie à 5 digits vers le bas : <= bid*(1-tol), entier sur la grille
+        let band = 1.18347 * (1.0 - tol);
+        assert!(li.limit_px <= band + 1e-12, "{} > bande {band}", li.limit_px);
+        let g = li.limit_px * 1e5;
+        assert!((g - g.round()).abs() < 1e-6);
+        assert!(li.limit_px > band - 1e-5, "arrondi <= 1 tick");
         assert_eq!(li.qty_base, 90_909.0);
         assert_eq!(li.volume, 90_909_00);
     }
@@ -262,7 +269,11 @@ mod tests {
         let ask = 1.65; // GBPCAD par ex.
         let li = leg_intent(0, -1, 3, 5, acc, 1.6498, ask, &sym(), "c2".into()).unwrap();
         let tol = 3.0 * 0.8e-4;
-        assert!((li.limit_px - ask * (1.0 + tol)).abs() < 1e-12);
+        // limite arrondie à 5 digits vers le haut : >= ask*(1+tol)
+        let band = ask * (1.0 + tol);
+        assert!(li.limit_px >= band - 1e-12, "{} < bande {band}", li.limit_px);
+        let g = li.limit_px * 1e5;
+        assert!((g - g.round()).abs() < 1e-6);
         // qty_base = volume réellement envoyé (arrondi au pas), miroir `oq` du POC
         let expect_vol = sym().to_volume(acc / ask);
         assert_eq!(li.volume, expect_vol);

@@ -19,12 +19,13 @@ journal_dir = "journal"
 require_netted = true
 reconcile_s = 30
 
-# Paramètres moteur figés (P) — holdout-validés, ne pas modifier sans recalibrage
+# Paramètres moteur figés (P) — ne pas modifier sans recalibrage
+# calibration Optuna poc_exec_fxcur trial #87 (holdout 26/10 : +955 $, 168 trades, 0 abort)
 [engine]
-fresh_ms = 500.0
-spread_cap = 1.7
-comm_scale = 1.0
-ddd_min = 2.5          # USD — plateau 2-4 $, holdout +11.25 $ / 6 execs
+fresh_ms = 909.0
+spread_cap = 1.76
+comm_scale = 1.10
+ddd_min = 2.66         # USD — seuil calibré (trial #87)
 q_min = 0.5
 leg_timeout_ms = 2000  # IOC résout << 1 s ; sinon abort + unwind
 req_timeout_s = 10

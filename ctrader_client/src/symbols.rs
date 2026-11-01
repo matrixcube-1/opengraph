@@ -2,7 +2,8 @@
 //! digits, conversion prix/volume.
 //!
 //! Rappel unités (vérifié doc officielle — le guide PDF se trompe) :
-//! - `bid`/`ask` : `u64` en `10^digits` unités de prix ;
+//! - `bid`/`ask` : `u64` TOUJOURS en 1/100000 d'unité de prix
+//!   (123000 -> 1.23, 53423782 -> 534.23782), indépendamment des digits ;
 //! - `volume` : **centièmes d'unité de base** (1 lot = 100_000 -> 10_000_000).
 
 use std::collections::HashMap;
@@ -25,14 +26,28 @@ pub struct SymInfo {
     pub enabled: bool,
 }
 
+/// Échelle fixe des prix SpotEvent cTrader : 1/100000 d'unité de prix,
+/// quels que soient les `digits` du symbole (doc ProtoOASpotEvent).
+pub const PRICE_SCALE: f64 = 100_000.0;
+
 impl SymInfo {
-    /// int64 venue -> prix f64.
+    /// int64 venue -> prix f64 (toujours /1e5, pas /10^digits).
     pub fn to_px(&self, raw: u64) -> f64 {
-        raw as f64 / 10f64.powi(self.digits)
+        raw as f64 / PRICE_SCALE
     }
-    /// prix f64 -> int64 venue (arrondi au digit près).
+    /// prix f64 -> int64 venue (toujours *1e5).
     pub fn to_raw(&self, px: f64) -> u64 {
-        (px * 10f64.powi(self.digits)).round() as u64
+        (px * PRICE_SCALE).round() as u64
+    }
+    /// Arrondit un prix sur la grille `digits` du symbole (exigence venue :
+    /// `limitPrice` ne peut porter plus de décimales que `symbol.digits`).
+    /// `up` = ceil, sinon floor ; l'epsilon absorbe le bruit flottant pour
+    /// qu'un prix déjà sur la grille ne soit pas décalé d'un tick.
+    pub fn round_px(&self, px: f64, up: bool) -> f64 {
+        let m = 10f64.powi(self.digits);
+        let x = px * m;
+        let r = if up { (x - 1e-7).ceil() } else { (x + 1e-7).floor() };
+        r / m
     }
     /// Unités de base f64 -> `volume` centièmes d'unité (arrondi au pas).
     /// Retourne 0 si sous le minimum : l'appelant décide alors (abort).
@@ -233,7 +248,44 @@ mod tests {
             step_volume: 100,
             enabled: true,
         };
-        assert!((i3.to_px(150_123) - 150.123).abs() < 1e-12);
+        // échelle fixe 1e5 indépendante des digits : 15_012_300 -> 150.123
+        assert!((i3.to_px(15_012_300) - 150.123).abs() < 1e-12);
+        assert_eq!(i3.to_raw(150.123), 15_012_300);
         assert!((i3.pip() - 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn round_px_digits_grid() {
+        let i5 = SymInfo {
+            symbol_id: 1,
+            digits: 5,
+            min_volume: 1000,
+            step_volume: 100,
+            enabled: true,
+        };
+        // 5 digits, les deux sens
+        assert!((i5.round_px(1.1339299999, true) - 1.13393).abs() < 1e-12);
+        assert!((i5.round_px(1.1339299999, false) - 1.13392).abs() < 1e-12);
+        // prix déjà sur la grille inchangé (up et down)
+        assert!((i5.round_px(1.18347, true) - 1.18347).abs() < 1e-12);
+        assert!((i5.round_px(1.18347, false) - 1.18347).abs() < 1e-12);
+        // 3 digits, les deux sens
+        let i3 = SymInfo {
+            symbol_id: 2,
+            digits: 3,
+            min_volume: 1000,
+            step_volume: 100,
+            enabled: true,
+        };
+        assert!((i3.round_px(150.123499, true) - 150.124).abs() < 1e-12);
+        assert!((i3.round_px(150.123499, false) - 150.123).abs() < 1e-12);
+        assert!((i3.round_px(150.123, true) - 150.123).abs() < 1e-12);
+        // résultat entier sur la grille 10^digits à 1e-6 près
+        for px in [1.1339299, 150.123499, 0.9999999] {
+            let r5 = i5.round_px(px, true) * 1e5;
+            assert!((r5 - r5.round()).abs() < 1e-6, "{px}");
+            let r3 = i3.round_px(px, false) * 1e3;
+            assert!((r3 - r3.round()).abs() < 1e-6, "{px}");
+        }
     }
 }

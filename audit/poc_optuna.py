@@ -32,21 +32,35 @@ STORAGE = f"sqlite:///{OUT}/optuna.db"
 # --mixed : calibration sur l'univers FX + sauts métal (cand_mixed.npz,
 # study dédiée — ne contamine pas la study FX-only). Le moteur est restreint
 # aux symboles utilisés par les chemins (sync ne marche pas les indices CFD).
+def _flag(name):
+    """--flag value -> value (retire de argv), ou None."""
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        v = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
+        return v
+    return None
+
+
 MIXED = "--mixed" in sys.argv
 if MIXED:
     sys.argv.remove("--mixed")
-CAND_FILE = OUT / ("cand_mixed.npz" if MIXED else "cand.npz")
-STUDY_NAME = "poc_exec_mixed" if MIXED else "poc_exec_v2"
-RAND_NAME = "poc_exec_rand_mixed" if MIXED else "poc_exec_rand_v2"
-BEST_OUT = OUT / ("best_params_mixed.json" if MIXED else "best_params.json")
-HOLDOUT_OUT = OUT / ("holdout_mixed.json" if MIXED else "holdout.json")
+_cand = _flag("--cand")
+_study = _flag("--study")
+CAND_FILE = OUT / (_cand or ("cand_mixed.npz" if MIXED else "cand.npz"))
+STUDY_NAME = _study or ("poc_exec_mixed" if MIXED else "poc_exec_v2")
+RAND_NAME = STUDY_NAME + "_rand" if _study else \
+    ("poc_exec_rand_mixed" if MIXED else "poc_exec_rand_v2")
+_suffix = _study or ("mixed" if MIXED else None)
+BEST_OUT = OUT / (f"best_params_{_suffix}.json" if _suffix else "best_params.json")
+HOLDOUT_OUT = OUT / (f"holdout_{_suffix}.json" if _suffix else "holdout.json")
 
 
 def make_engine():
     if MIXED:
         syms = FX + [ms for cs in METAL_SYM.values() for ms in cs.values()]
         return Engine(syms=syms, mixed=True)
-    return Engine()
+    return Engine(syms=FX)   # bouts non enumeres -> FX seul suffit (sync allegee)
 TRAIN_DAYS = DAYS[:2]           # 22, 23 oct. -> in-sample (2 steps de pruning)
 HOLDOUT_DAY = DAYS[2]           # 26 oct. -> évalué UNE fois
 SEED = 20261027
@@ -88,6 +102,11 @@ def replay(eng, cands, p):
     t_free = -1e18
     for t, _pi0, _net0, _ddd0 in cands:
         if t < t_free:
+            continue
+        # borne prouvee : net_stocké = argmax sous bornes généreuses du scan
+        # (fresh<=2000, cap<=3.0, comm_scale=1) >= tout net ré-évalué sous les
+        # bornes plus serrées du trial -> si déjà < ddd_min, l'éval est vaine
+        if _net0 < p["ddd_min"]:
             continue
         eng.sync(int(t))
         ev = eng.eval_at(int(t), p["fresh_ms"], p["spread_cap"], p["comm_scale"],

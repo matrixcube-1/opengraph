@@ -199,8 +199,11 @@ class Engine:
                     self.P_ISM[pi, li] = True
                     self.P_M1[pi, li] = self.sidx.get(s1, -1)
                     self.P_M2[pi, li] = self.sidx.get(s2, -1)
-                    self.P_CB[pi] += (METAL_COMM.get(s1, 0.0)
-                                      + METAL_COMM.get(s2, 0.0))
+                    # commission cTrader : 3 $ par cote par 100k USD de
+                    # notionnel — meme modele notionnel que le FX (chiffre
+                    # IC "Raw Spread cTrader : $3.00 per USD$100k", metaux
+                    # inclus). Chaque ordre ~ 100k USD -> COMM par ordre.
+                    self.P_CB[pi] += 2.0 * COMM
                     node = to
                     li += 1
                     self.P_END[pi] = node
@@ -382,7 +385,7 @@ class Engine:
                     cash += qty * (1 - frac) * up[node]
                     parts += 1
                 qty_m = qty * frac * q_now      # métal reçu (unités métal)
-                comm += METAL_COMM.get(s1, 0.0)
+                comm += COMM                    # 3 $ / cote / 100k USD (cTrader)
                 filled += 1
                 # ordre 2 : métal -> B (vente au bid, sémantique d=+1)
                 t_f2 = t_f + lat_ms
@@ -411,7 +414,7 @@ class Engine:
                     cash += (1 - frac2) * liq_metal()
                     parts += 1
                 qty = qty_m * frac2 * q_now2
-                comm += METAL_COMM.get(s2, 0.0)
+                comm += COMM                    # 3 $ / cote / 100k USD (cTrader)
                 filled += 1
                 node = to
                 t = t_f2

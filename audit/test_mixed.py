@@ -116,7 +116,8 @@ def test_exec_metal_hop_two_orders():
     assert r is not None and r["res"] == "done", r
     assert r["fills"] == 2, f"hop metal = 2 ordres, fills={r['fills']}"
     # attendu : 100k USD -> oz a 2600.5 -> EUR a 2363.0 -> ~99.98k USD
-    exp = NOTIONAL / 2600.5 * 2363.0 * 1.10 - NOTIONAL
+    # - 2 ordres x COMM (3 $/cote/100k USD notional, modele cTrader)
+    exp = NOTIONAL / 2600.5 * 2363.0 * 1.10 - NOTIONAL - 2 * pe.COMM
     assert abs(r["pnl"] - exp) < 5.0, f"pnl={r['pnl']:.2f} vs attendu {exp:.2f}"
 
 

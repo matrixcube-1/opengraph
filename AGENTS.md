@@ -48,6 +48,15 @@
   9) adapter cTrader custom (traits DataClient/ExecutionClient) + push final.
   Convention A = « marquage aux prix exécutables ».
 
+## Métaux — STAND-BY (décision utilisateur, nov. 2026)
+- Sauts métal intérieurs (XAU/XAG) implémentés dans le POC (`mixed=True`, opt-in) mais
+  **désactivés** : production = FX-only. `mixed=False` reste le défaut ; ne pas porter en Rust.
+- Motif : croisés XAUEUR/JPY/GBP/CHF/AUD, XAGEUR/AUD peu liquides (3-5x moins de ticks,
+  quote toutes 400-970 ms vs 100-150 ms XAUUSD/XAGUSD, spreads plus larges) -> prix
+  vraisemblablement synthétiques ; edge détecté = retard de quote, pas exécutable.
+  Avec XAUUSD/XAGUSD seuls, aucun saut intérieur n'existe (mono-USD).
+- Verdict Optuna (holdout 26/10) : mixte #179 +894 $ < FX #87 +955 $.
+
 ## Téléchargement Dukascopy (dukascopy-node 1.51.0)
 - `-to` est EXCLUSIF : pour un mois complet, `-to` = 1er jour du mois suivant.
 - Rythme : un seul processus pour tout le serveur, `-bs 1 -bp 1000` (≈1 req/s).

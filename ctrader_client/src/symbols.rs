@@ -101,15 +101,27 @@ impl SymTable {
 pub fn map_light_symbols(
     list: &[ProtoOALightSymbol<'_>],
 ) -> Result<(SymTable, Vec<i64>), ClientError> {
-    let by_name: HashMap<&str, &ProtoOALightSymbol<'_>> = list
+    // La venue peut nommer « EURUSD » ou « EUR/USD » selon le broker
+    // (doc officielle vs IC Markets — audit §4) : on normalise aux
+    // caractères alphanumériques pour tolérer les deux formats.
+    let by_name: HashMap<String, &ProtoOALightSymbol<'_>> = list
         .iter()
-        .filter_map(|s| s.symbolName.as_deref().map(|n| (n, s)))
+        .filter_map(|s| {
+            s.symbolName.as_deref().map(|n| {
+                (
+                    n.chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .collect::<String>(),
+                    s,
+                )
+            })
+        })
         .collect();
     let mut info: [Option<SymInfo>; 28] = std::array::from_fn(|_| None);
     let mut ids = Vec::with_capacity(28);
     for (e, &sym) in FX.iter().enumerate() {
         let s = by_name
-            .get(sym)
+            .get(sym as &str)
             .ok_or(ClientError::MissingSymbol(FX[e]))?;
         info[e] = Some(SymInfo {
             symbol_id: s.symbolId,

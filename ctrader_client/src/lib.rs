@@ -46,4 +46,4 @@ pub const MAX_FRAME_SIZE: usize = 1_048_576;
 
 /// Bande IOC autour de la touche : `3 * tau_slip_bp` en fraction
 /// (parité `nt_realism.py` : tol = 3*0.8 bp = 2.4 bp).
-pub const IOC_TOL: f64 = 3.0 * 0.8e-4;
+pub const IOC_TOL: f64 = 3.0 * 0.6945e-4; // 3×τ calibré (trial #87) — audit M7

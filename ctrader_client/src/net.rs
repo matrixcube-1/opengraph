@@ -170,13 +170,13 @@ pub async fn send_request<M: quacky::MessageWrite>(
 ) -> Result<(String, oneshot::Receiver<ProtoMessage<'static>>), ClientError> {
     let cmid = uuid::Uuid::new_v4().to_string();
     let rx = handle.pending.register(&cmid);
-    let res = encode_payload(msg).and_then(|p| {
+    let res = encode_payload(msg).map(|p| {
         let env = crate::codec::envelope(payload_type, p, Some(cmid.as_str()));
-        Ok(ProtoMessage {
+        ProtoMessage {
             payloadType: env.payloadType,
             payload: env.payload.map(|c| Cow::Owned(c.into_owned())),
             clientMsgId: env.clientMsgId.map(|c| Cow::Owned(c.into_owned())),
-        })
+        }
     });
     match res {
         Ok(env) => match handle.outbound.send(env).await {
@@ -239,12 +239,39 @@ pub async fn rpc<M: quacky::MessageWrite>(
     what: &'static str,
 ) -> Result<ProtoMessage<'static>, ClientError> {
     let (_cmid, mut rx) = send_request(handle, ptype, msg).await?;
+    // Convention cTrader : la réponse porte toujours payloadType = req + 1.
+    // Une ProtoOAErrorRes (2142) ou toute autre enveloppe corrélée au même
+    // clientMsgId NE doit PAS résoudre la requête en succès (audit Mo2).
+    let expected = ptype as u32 + 1;
     tokio::time::timeout(timeout, async {
         loop {
             tokio::select! {
                 biased;
                 r = &mut rx => {
-                    return r.map_err(|_| ClientError::Dead("pending fermé".into()));
+                    let m = r.map_err(|_| ClientError::Dead("pending fermé".into()))?;
+                    if m.payloadType == expected {
+                        return Ok(m);
+                    }
+                    if m.payloadType
+                        == crate::proto::spotware::ProtoOAPayloadType::PROTO_OA_ERROR_RES
+                            as u32
+                    {
+                        let e = decode_payload::<
+                            crate::proto::spotware::ProtoOAErrorRes,
+                        >(&m)?;
+                        return Err(ClientError::Venue {
+                            code: e.errorCode.to_string(),
+                            desc: e
+                                .description
+                                .as_deref()
+                                .unwrap_or_default()
+                                .to_string(),
+                        });
+                    }
+                    return Err(ClientError::Inconsistent(format!(
+                        "{what}: payloadType {} (attendu {expected})",
+                        m.payloadType
+                    )));
                 }
                 inc = handle.inbound.recv() => match inc {
                     Some(Incoming::Msg(m)) => {
@@ -274,7 +301,7 @@ pub fn dispatch_response(handle: &NetHandle, msg: ProtoMessage<'static>) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::{decode_msg, frame};
+    use crate::codec::decode_msg;
     use crate::io::mock::*;
     use crate::proto::spotware::{
         ProtoOAAccountAuthReq, ProtoOAAccountAuthRes, ProtoOAPayloadType, ProtoOASpotEvent,
@@ -332,7 +359,7 @@ mod tests {
             send_request(&handle, ProtoOAPayloadType::PROTO_OA_ACCOUNT_AUTH_REQ, &req)
                 .await
                 .unwrap();
-        let _ = rx;
+        drop(rx);
         mock_flow(&mut peer).await;
 
         // dispatcher : la réponse résout le pending, le spot remonte
@@ -356,6 +383,53 @@ mod tests {
         .await
         .expect("flux dans le délai");
         assert!(got_spot && got_resp);
+    }
+
+    /// Audit Mo2 : une ProtoOAErrorRes (2142) corrélée au même
+    /// clientMsgId ne résout PAS la requête en succès -> Venue error.
+    #[tokio::test]
+    async fn rpc_rejects_error_res() {
+        let (io, mut peer) = MemIo::pair();
+        let mut handle = spawn(io, LastRx::default());
+
+        let venue = tokio::spawn(async move {
+            let raw = peer.recv_frame().await.unwrap();
+            let req = decode_msg(&raw[4..]).unwrap();
+            let cmid = req.clientMsgId.unwrap().into_owned();
+            let err = crate::proto::spotware::ProtoOAErrorRes {
+                payloadType: Some(ProtoOAPayloadType::PROTO_OA_ERROR_RES),
+                errorCode: Cow::Borrowed("ACCOUNT_NOT_AUTHORIZED"),
+                description: Some(Cow::Borrowed("nope")),
+                ..Default::default()
+            };
+            let env = crate::codec::envelope(
+                ProtoOAPayloadType::PROTO_OA_ERROR_RES,
+                encode_payload(&err).unwrap(),
+                Some(&cmid),
+            );
+            peer.send_payload(crate::codec::encode_msg(&env).unwrap());
+        });
+
+        let req = ProtoOAAccountAuthReq {
+            payloadType: Some(ProtoOAPayloadType::PROTO_OA_ACCOUNT_AUTH_REQ),
+            accessToken: Cow::Borrowed("tok-x"),
+            ctidTraderAccountId: 42,
+        };
+        let res = rpc(
+            &mut handle,
+            ProtoOAPayloadType::PROTO_OA_ACCOUNT_AUTH_REQ,
+            &req,
+            Duration::from_secs(2),
+            "account_auth",
+        )
+        .await;
+        match res {
+            Err(ClientError::Venue { code, .. }) => {
+                assert_eq!(code, "ACCOUNT_NOT_AUTHORIZED");
+            }
+            other => panic!("attendu Venue error, eu {other:?}"),
+        }
+        venue.await.unwrap();
     }
 
     #[tokio::test]

@@ -115,9 +115,11 @@ def test_exec_metal_hop_two_orders():
     r = e.exec_seq(0, pi, lat_ms=5, tau_slip_bp=24.0, q_min=0.5)
     assert r is not None and r["res"] == "done", r
     assert r["fills"] == 2, f"hop metal = 2 ordres, fills={r['fills']}"
-    # attendu : 100k USD -> oz a 2600.5 -> EUR a 2363.0 -> ~99.98k USD
-    # - 2 ordres x COMM (3 $/cote/100k USD notional, modele cTrader)
-    exp = NOTIONAL / 2600.5 * 2363.0 * 1.10 - NOTIONAL - 2 * pe.COMM
+    # attendu : 100k USD -> oz a 2600.5 -> EUR a 2363.0 -> liquidation
+    # EXÉCUTABLE EUR->USD au bid 1.0999 (Convention A stricte) - 2 ordres
+    # x COMM - comm de liquidation COMM/mid(EURUSD)
+    exp = (NOTIONAL / 2600.5 * 2363.0 * 1.0999
+           - NOTIONAL - 2 * pe.COMM - pe.COMM / 1.10)
     assert abs(r["pnl"] - exp) < 5.0, f"pnl={r['pnl']:.2f} vs attendu {exp:.2f}"
 
 

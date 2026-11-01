@@ -6,8 +6,10 @@
 //!   Unfilled            -> abort(reason) + unwind des deltas
 //!   Filled frac < q_min -> abort("q<q_min") + unwind
 //!   Filled frac >= q_min -> fills.push((frac,px_node)) ; acc *= frac*px ; li+1
-//! li == n_legs -> Done + exec_settle (modèle) ; positions restent ouvertes
-//!   (résiduel intentionnel Convention A — flatten fin de session).
+//! li == n_legs -> Done + exec_settle (modèle) ; le résiduel est liquidé
+//!   immédiatement par la file d'unwind (Convention A stricte — audit C2 :
+//!   le sim le marque à la liquidation exécutable, le live doit donc
+//!   réellement liquider, pas porter l'exposition jusqu'au flatten).
 //! ```
 
 use std::collections::BTreeMap;
@@ -70,6 +72,8 @@ pub struct PathExec {
     pub li: usize,
     /// Quantité de devise nœud courante (post-fills).
     pub acc: f64,
+    /// Fraction minimum de fill (cfg.engine.q_min — audit m3).
+    pub q_min: f64,
     /// `(frac_eff, px_node)` par jambe remplie — entrée d'`exec_settle`.
     pub fills: Vec<(f64, f64)>,
     /// Deltas de position créés par la séquence : edge -> base units
@@ -82,13 +86,14 @@ pub struct PathExec {
 impl PathExec {
     /// Démarre une séquence : `acc` = `start_qty(t0, pi)` (même marque
     /// que le moteur — Convention A).
-    pub fn new(t0: i64, pi: usize, acc: f64, pt: &PathTables) -> Self {
+    pub fn new(t0: i64, pi: usize, acc: f64, q_min: f64, pt: &PathTables) -> Self {
         Self {
             pi,
             t0,
             legs: legs_of(pi, pt),
             li: 0,
             acc,
+            q_min,
             fills: Vec::new(),
             pos_deltas: BTreeMap::new(),
             in_flight: None,
@@ -157,7 +162,7 @@ impl PathExec {
         } else {
             qty_filled * px_fill / self.acc
         };
-        if frac_eff < Q_MIN {
+        if frac_eff < self.q_min {
             // le fill partiel reste une position réelle -> unwind
             return LegOutcome::Abort {
                 reason: "q<q_min".into(),
@@ -212,6 +217,64 @@ impl PathExec {
     }
 }
 
+/// Débouclage programmé : `attempts` borne les retries (audit M6).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnwindJob {
+    pub edge: u8,
+    pub trade: ProtoTrade,
+    pub qty: f64,
+    pub attempts: u8,
+}
+
+impl From<(u8, ProtoTrade, f64)> for UnwindJob {
+    fn from((edge, trade, qty): (u8, ProtoTrade, f64)) -> Self {
+        Self { edge, trade, qty, attempts: 0 }
+    }
+}
+
+/// Tentatives max d'un débouclage avant `manual_check` (audit M6).
+pub const UNWIND_MAX_ATTEMPTS: u8 = 5;
+
+/// Couverture signée des débouclages programmés par edge : +qty pour les
+/// SELL (couvrent un long), -qty pour les BUY (couvrent un short).
+/// `in_flight` = (edge, trade, qty_base) de l'ordre unwind en vol.
+/// Audit C4 : flatten ne doit jamais remettre en file une position déjà
+/// couverte par un débouclage programmé (double clôture = position inverse).
+pub fn unwind_coverage(
+    queue: &[UnwindJob],
+    in_flight: Option<(u8, ProtoTrade, f64)>,
+) -> BTreeMap<u8, f64> {
+    let mut m: BTreeMap<u8, f64> = BTreeMap::new();
+    let add = |m: &mut BTreeMap<u8, f64>, edge: u8, trade: ProtoTrade, qty: f64| {
+        let s = if trade == ProtoTrade::Sell { 1.0 } else { -1.0 };
+        *m.entry(edge).or_insert(0.0) += s * qty;
+    };
+    for j in queue {
+        add(&mut m, j.edge, j.trade, j.qty);
+    }
+    if let Some((e, t, q)) = in_flight {
+        add(&mut m, e, t, q);
+    }
+    m
+}
+
+/// Part non couverte de la position signée `q` -> job à émettre, ou None.
+/// La couverture ne s'impute que si elle porte sur le même signe que la
+/// position ; une couverture de signe opposé appartient à un état
+/// antérieur et ne réduit pas le reliquat à fermer. Jamais d'ordre à
+/// l'inverse du sens de la position (audit C4).
+pub fn uncovered_job(edge: u8, q: f64, covered: f64) -> Option<UnwindJob> {
+    let cov = if (covered >= 0.0) == (q >= 0.0) { covered } else { 0.0 };
+    let unc = q - cov;
+    if q > 0.0 && unc > 1e-9 {
+        Some((edge, ProtoTrade::Sell, unc.min(q)).into())
+    } else if q < 0.0 && unc < -1e-9 {
+        Some((edge, ProtoTrade::Buy, (-unc).min(-q)).into())
+    } else {
+        None
+    }
+}
+
 /// Sens d'un ordre de débouclage (unwind).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtoTrade {
@@ -220,6 +283,7 @@ pub enum ProtoTrade {
 }
 
 /// Bouclage modèle après `Done` : `engine.exec_settle` sur les fills.
+/// Marquage sur l'état COURANT du moteur (live — pas de rewind, audit C3).
 pub fn settle(
     engine: &mut Engine,
     t0: i64,
@@ -228,7 +292,8 @@ pub fn settle(
     aborted: bool,
     pt: &PathTables,
 ) -> Option<(f64, u8, u8, f64)> {
-    engine.exec_settle(t0, pi, fills, aborted, pt)
+    let _ = t0; // conservé dans la signature (journal) — non utilisé en live
+    engine.exec_settle(pi, fills, aborted, pt)
 }
 
 /// Garde-fou : le symbole d'un plan d'unwind doit exister dans la table.
@@ -312,7 +377,7 @@ mod tests {
         let st = sym_all();
         let pi = path_jpy_cad(&pt);
         // acc = 15M JPY ; fill BUY CADJPY 90_909 CAD @ 165.02
-        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, &pt);
+        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, Q_MIN, &pt);
         let leg = seq.current_leg().unwrap();
         assert_eq!(leg.d, -1);
         let si = st.by_edge(leg.edge).unwrap();
@@ -346,7 +411,7 @@ mod tests {
         let pt = build_tables();
         let st = sym_all();
         let pi = path_jpy_cad(&pt);
-        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, &pt);
+        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, Q_MIN, &pt);
         let leg = seq.current_leg().unwrap();
         let si = st.by_edge(leg.edge).unwrap();
         seq.intent_for(165.0, 165.02, si, "t".into());
@@ -362,7 +427,7 @@ mod tests {
         let pt = build_tables();
         let st = sym_all();
         let pi = path_jpy_cad(&pt);
-        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, &pt);
+        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, Q_MIN, &pt);
         let leg = seq.current_leg().unwrap();
         let si = st.by_edge(leg.edge).unwrap();
         let i = seq.intent_for(165.0, 165.02, si, "t".into()).unwrap();
@@ -387,7 +452,7 @@ mod tests {
     fn unwind_plan_both_sides() {
         let pt = build_tables();
         let pi = path_jpy_cad(&pt);
-        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, &pt);
+        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, Q_MIN, &pt);
         let e = seq.legs[0].edge;
         seq.pos_deltas.insert(e, 500.0);
         seq.pos_deltas.insert(5, -300.0); // short base sur arête 5
@@ -399,22 +464,49 @@ mod tests {
     }
 
     #[test]
+    fn coverage_dedup_prevents_double_close() {
+        // audit C4 : net_pos +500 déjà couverte par Sell 500 en file
+        // -> aucun ordre supplémentaire ; couverture partielle -> reliquat.
+        let e = 3u8;
+        let q = vec![
+            UnwindJob { edge: e, trade: ProtoTrade::Sell, qty: 500.0, attempts: 0 },
+            UnwindJob { edge: 7, trade: ProtoTrade::Buy, qty: 200.0, attempts: 1 },
+        ];
+        let cov = unwind_coverage(&q, Some((e, ProtoTrade::Sell, 100.0)));
+        assert!((cov[&e] - 600.0).abs() < 1e-12);
+        assert!((cov[&7] + 200.0).abs() < 1e-12);
+
+        // position +500 entièrement couverte (600 >= 500) -> rien
+        assert!(uncovered_job(e, 500.0, cov[&e]).is_none());
+        // position +800 -> seul le reliquat 200 part (borné à la position)
+        let j = uncovered_job(e, 800.0, cov[&e]).unwrap();
+        assert_eq!((j.trade, j.qty), (ProtoTrade::Sell, 200.0));
+        // position -300 alors que la file vend -> déboucle en achat
+        let j = uncovered_job(9, -300.0, 0.0).unwrap();
+        assert_eq!((j.trade, j.qty), (ProtoTrade::Buy, 300.0));
+        // couverture de signe opposé : n'appartient pas à cette position —
+        // le short -50 est réel, il faut bien un achat de 50
+        let j = uncovered_job(e, -50.0, cov[&e]).unwrap();
+        assert_eq!((j.trade, j.qty), (ProtoTrade::Buy, 50.0));
+    }
+
+    #[test]
     fn unwind_intent_uses_ioc_band() {
         let st = sym_all();
         // clôturer 500 unités long CADJPY -> SELL, limite bid-tol
         let e = FX.iter().position(|&s| s == "CADJPY").unwrap() as u8;
         let i = unwind_intent(e, ProtoTrade::Sell, 500.0, 165.0, 165.02, &st, "u".into())
             .unwrap();
-        let tol = 3.0 * 0.8e-4;
+        let tol = crate::IOC_TOL;
         // limite arrondie à 3 digits : SELL floor <= bid*(1-tol), BUY ceil >= ask*(1+tol)
         assert!(i.limit_px <= 165.0 * (1.0 - tol) + 1e-12);
-        assert!((i.limit_px - 164.960).abs() < 1e-9, "{}", i.limit_px);
+        assert!((i.limit_px - 164.965).abs() < 1e-9, "{}", i.limit_px);
         assert_eq!(i.volume, 500 * 100); // centièmes d'unité
         // BUY : acc factice = qty*ask -> qty_base = qty
         let j = unwind_intent(e, ProtoTrade::Buy, 300.0, 165.0, 165.02, &st, "u".into())
             .unwrap();
         assert!(j.limit_px >= 165.02 * (1.0 + tol) - 1e-12);
-        assert!((j.limit_px - 165.060).abs() < 1e-9, "{}", j.limit_px);
+        assert!((j.limit_px - 165.055).abs() < 1e-9, "{}", j.limit_px);
         assert!((j.qty_base - 300.0).abs() < 1.0);
     }
 }

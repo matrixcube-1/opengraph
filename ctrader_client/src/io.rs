@@ -72,7 +72,7 @@ impl FrameIo for TlsIo {
 }
 
 impl FrameRd for TlsRd {
-    async fn recv<'a>(&'a mut self) -> Result<Vec<u8>, ClientError> {
+    async fn recv(&mut self) -> Result<Vec<u8>, ClientError> {
         let mut len_buf = [0u8; 4];
         self.rd.read_exact(&mut len_buf).await?;
         let n = u32::from_be_bytes(len_buf) as usize;
@@ -177,7 +177,7 @@ pub mod mock {
     }
 
     impl FrameRd for MemRd {
-        async fn recv<'a>(&'a mut self) -> Result<Vec<u8>, ClientError> {
+        async fn recv(&mut self) -> Result<Vec<u8>, ClientError> {
             loop {
                 if let Some(p) = take_frame(&mut self.rbuf) {
                     return Ok(p);

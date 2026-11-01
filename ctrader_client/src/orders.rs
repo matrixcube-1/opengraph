@@ -58,6 +58,7 @@ pub struct LegIntent {
 /// Calcule l'intention de la jambe : prix limite ±tol, volume arrondi au
 /// pas du symbole. Retourne None si la quote ou le volume est invalide
 /// (abort "no quote" côté appelant).
+#[allow(clippy::too_many_arguments)]
 pub fn leg_intent(
     edge: u8,
     d: i8,
@@ -129,6 +130,9 @@ pub struct FillAcc {
     pub qty: f64,
     /// Somme qty*px — `px_fill = qty_px/qty`.
     pub qty_px: f64,
+    /// Commission venue cumulée (`ProtoOADeal.commission / 10^moneyDigits`,
+    /// signée — généralement négative = débitée). Audit Mo8.
+    pub comm: f64,
 }
 
 impl FillAcc {
@@ -178,12 +182,18 @@ pub fn on_execution_event(
         if qty > 0.0 && px > 0.0 {
             acc.add(qty, px);
         }
+        // commission réellement débitée (étape B DEPLOY) — signée négative
+        if let Some(c) = d.commission {
+            let md = d.moneyDigits.unwrap_or(2) as i32;
+            acc.comm += c as f64 / 10f64.powi(md);
+        }
     } else if let Some(o) = ev.order.as_ref() {
         if let (Some(v), Some(px)) = (o.executedVolume, o.executionPrice) {
             let qty = si.from_volume(v);
             if qty > acc.qty && px > 0.0 {
                 // executedVolume est cumulatif — remplacer, pas ajouter
-                *acc = FillAcc { qty, qty_px: qty * px };
+                let comm = acc.comm;
+                *acc = FillAcc { qty, qty_px: qty * px, comm };
             }
         }
     }
@@ -247,11 +257,11 @@ mod tests {
 
     #[test]
     fn intent_sell_side_hits_bid_minus_tol() {
-        // d=+1 : SELL, px = bid*(1-2.4bp), qty = acc (en base)
+        // d=+1 : SELL, px = bid*(1-IOC_TOL), qty = acc (en base)
         let li = leg_intent(0, 1, 0, 1, 90_909.0, 1.18347, 1.18352, &sym(), "c1".into())
             .unwrap();
         assert_eq!(li.d, 1);
-        let tol = 3.0 * 0.8e-4;
+        let tol = crate::IOC_TOL;
         // limite arrondie à 5 digits vers le bas : <= bid*(1-tol), entier sur la grille
         let band = 1.18347 * (1.0 - tol);
         assert!(li.limit_px <= band + 1e-12, "{} > bande {band}", li.limit_px);
@@ -259,7 +269,7 @@ mod tests {
         assert!((g - g.round()).abs() < 1e-6);
         assert!(li.limit_px > band - 1e-5, "arrondi <= 1 tick");
         assert_eq!(li.qty_base, 90_909.0);
-        assert_eq!(li.volume, 90_909_00);
+        assert_eq!(li.volume, 9_090_900);
     }
 
     #[test]
@@ -268,7 +278,7 @@ mod tests {
         let acc = 150_000.0; // JPY
         let ask = 1.65; // GBPCAD par ex.
         let li = leg_intent(0, -1, 3, 5, acc, 1.6498, ask, &sym(), "c2".into()).unwrap();
-        let tol = 3.0 * 0.8e-4;
+        let tol = crate::IOC_TOL;
         // limite arrondie à 5 digits vers le haut : >= ask*(1+tol)
         let band = ask * (1.0 + tol);
         assert!(li.limit_px >= band - 1e-12, "{} < bande {band}", li.limit_px);

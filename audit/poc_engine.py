@@ -9,7 +9,9 @@
 
 Conventions du document :
 - chemins ouverts <=3 jambes devises (K8) + terminaison bout optionnelle (puits)
-- DDD aux taux exécutables (bid/ask réels) ; résiduel FX marqué mid, bout marqué au bid
+- DDD aux taux exécutables (bid/ask réels) ; résiduel marqué à la liquidation
+  EXÉCUTABLE (Convention A stricte) : devise -> USD au bid/ask de sa paire USD
+  + commission de la jambe de liquidation. Bout marqué au bid.
 - coûts : commission 3.50/up[base] par jambe FX (compte USD) + commission bout
 - SWI20 : Duka cote CHF, IC cote USD -> conversion CHF->USD ; *CMDUSX : x0.01
 """
@@ -24,6 +26,9 @@ import numpy as np
 DATA = Path("/opt/arb/data")
 DAYS = ["2026-10-22", "2026-10-23", "2026-10-26"]
 EPOCH = {d: int(time.mktime(time.strptime(d, "%Y-%m-%d")) * 1000) - time.timezone * 1000 for d in DAYS}
+# médiane de spread : in-sample UNIQUEMENT (jamais le holdout) — sinon fuite
+# d'information future dans le cap spread_cap x MED.
+MED_CUTOFF = EPOCH[DAYS[-1]]
 
 FX = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD","EURGBP","EURJPY","EURCHF",
       "EURAUD","EURCAD","EURNZD","GBPJPY","GBPCHF","GBPAUD","GBPCAD","GBPNZD","AUDJPY","AUDCHF",
@@ -131,7 +136,12 @@ class Engine:
         self.data = {s: v for s, v in self.data.items() if v is not None}
         self.slist = sorted(self.data)
         self.sidx = {s: i for i, s in enumerate(self.slist)}
-        self.med_spread = {s: float(np.median(v[2] - v[1])) for s, v in self.data.items()}
+        self.med_spread = {}
+        for s, v in self.data.items():
+            sp = v[2] - v[1]
+            ins = v[0] < MED_CUTOFF
+            sp = sp[ins] if ins.any() else sp
+            self.med_spread[s] = float(np.median(sp))
         self.MED = np.array([self.med_spread[s] for s in self.slist])
         self.IS_FX = np.array([s in set(FX) for s in self.slist])
         # conversion Duka -> nœud IC : le facteur s'annule dans bid/ask — seul
@@ -267,11 +277,34 @@ class Engine:
             up[i] = m if direct else 1.0 / m
         return up
 
+    def _usd_liq(self, ok):
+        """Convention A stricte : taux EXÉCUTABLE de liquidation devise -> USD
+        et commission de cette jambe de liquidation, par devise.
+        cUSD -> bid (on vend la devise) ; USDc -> 1/ask (on achète USD).
+        rate NaN si paire absente/non ok -> chemin non valorisable.
+        comm : cUSD -> COMM/mid (base = devise) ; USDc -> COMM (base = USD) ;
+        USD -> rate 1, comm 0."""
+        rate = np.full(8, np.nan); comm = np.full(8, np.nan)
+        rate[0] = 1.0; comm[0] = 0.0
+        for i, c in enumerate(CURR):
+            if c == "USD":
+                continue
+            sj = self.sidx.get(c + "USD"); direct = True
+            if sj is None:
+                sj = self.sidx.get("USD" + c); direct = False
+            if sj is None or not ok[sj]:
+                continue
+            mid = 0.5 * (self.bid[sj] + self.ask[sj])
+            rate[i] = self.bid[sj] if direct else 1.0 / self.ask[sj]
+            comm[i] = COMM / mid if direct else COMM
+        return rate, comm
+
     def eval_at(self, t, fresh_ms, spread_cap, comm_scale=1.0, rows=None):
         """État courant -> (best_net, best_pi_global, best_ddd). Vectorisé.
         rows : sous-ensemble de chemins (IDX_FX / IDX_BT) ou None = tous."""
         ok = (self.last_t <= t) & ((t - self.last_t) <= fresh_ms)   # pas de quote future
         up = self.usd_price(ok)
+        liq_rate, liq_comm = self._usd_liq(ok)
         # validité des arêtes FX : fraîches + spread <= cap x médian (cap FX seul)
         spread_viol = (self.ask - self.bid) > spread_cap * self.MED
         fx_ok = ok & ~(spread_viol & self.IS_FX)
@@ -306,7 +339,10 @@ class Engine:
         up_s = up[self.P_S[R]]
         qty0 = NOTIONAL / np.where(up_s > 0, up_s, np.nan)
         qty_end = qty0 * prod
-        up_end = up[self.P_END[R]]
+        # Convention A stricte : la devise terminale est marquée au taux de
+        # liquidation exécutable (jamais au mid) + commission de liquidation.
+        up_end = liq_rate[self.P_END[R]]
+        comm_end = liq_comm[self.P_END[R]]
         # unifié : FX -> qty_end x up[end] ; bout -> x ratio bid/ask (conversions s'annulent)
         has_b = self.P_HASB[R]
         PB = self.P_BOUT[R]
@@ -321,8 +357,9 @@ class Engine:
         # P_CB (commissions métal/bout, meme modele notionnel cTrader) passe
         # aussi par comm_scale — sinon un hop metal echapperait a la
         # robustesse commission que subissent les jambes FX.
-        net = np.where(valid_path & np.isfinite(comm_fx),
-                       usd_out - NOTIONAL - comm_fx - self.P_CB[R] * comm_scale,
+        net = np.where(valid_path & np.isfinite(comm_fx) & np.isfinite(comm_end),
+                       usd_out - NOTIONAL - comm_fx - comm_end * comm_scale
+                       - self.P_CB[R] * comm_scale,
                        -np.inf)
         pi = int(np.argmax(net))
         if not np.isfinite(net[pi]):
@@ -347,9 +384,20 @@ class Engine:
         self.sync(t0)
         ok = np.ones(len(self.slist), bool)
         up = self.usd_price(ok)
+        liq_rate, liq_comm = self._usd_liq(ok)
         start = self.p_start[pi]
         qty = NOTIONAL / up[start]
         cash = 0.0; comm = 0.0; t = t0; filled = 0; node = start; parts = 0
+
+        def liq(node):
+            """Convention A : 1 unité de `node` -> USD exécutable (+ comm).
+            Repli mid si la paire USD n'a jamais publié (data manquante)."""
+            r = liq_rate[node]; c = liq_comm[node]
+            if not np.isfinite(r):
+                r = up[node]
+            if not np.isfinite(c):
+                c = COMM / up[node] if np.isfinite(up[node]) and up[node] > 0 else COMM
+            return r, c
         for k, ei in enumerate(legs + ([-1] if bout else [])):
             t_f = t + lat_ms
             if ei == -1:
@@ -358,7 +406,9 @@ class Engine:
                 if j < 0 or t_f - jt > 500:
                     return self._abort("bout stale", filled, cash, comm, t - t0, parts)
                 comm += self.P_CB[pi]
-                usd_end = qty * (bid_f / ask_f) * up[node]   # node = devise IC du bout
+                r, c = liq(node)
+                usd_end = qty * (bid_f / ask_f) * r          # node = devise IC du bout
+                comm += c
                 t = t_f
                 return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm, why="bout",
                             fills=filled + 1, dur=t - t0, parts=parts)
@@ -386,7 +436,9 @@ class Engine:
                 if frac < q_min:
                     return self._abort("q<q_min", filled, cash, comm, t - t0, parts)
                 if frac < 1.0:
-                    cash += qty * (1 - frac) * up[node]
+                    r, c = liq(node)
+                    cash += qty * (1 - frac) * r
+                    comm += c
                     parts += 1
                 qty_m = qty * frac * q_now      # métal reçu (unités métal)
                 comm += COMM                    # 3 $ / cote / 100k USD (cTrader)
@@ -398,8 +450,11 @@ class Engine:
                 jt, bid2, _, j2 = self.quote_at(s2, t_f2)
                 # liquidation Convention A du résiduel métal dans `node`
                 def liq_metal():
+                    nonlocal comm
                     _, bid1_now, _, jl = self.quote_at(s1, t_f2)
-                    return qty_m * (bid1_now if jl >= 0 else bid1) * up[node]
+                    r, c = liq(node)
+                    comm += c
+                    return qty_m * (bid1_now if jl >= 0 else bid1) * r
                 if j2 < 0 or not np.isfinite(q_send2) or q_send2 <= 0:
                     cash += liq_metal()
                     return self._abort("no quote m2", filled, cash, comm, t_f2 - t0, parts)
@@ -439,7 +494,9 @@ class Engine:
             if frac < q_min:
                 return self._abort("q<q_min", filled, cash, comm, t - t0, parts)
             if frac < 1.0:
-                cash += qty * (1 - frac) * up[node]
+                r, c = liq(node)
+                cash += qty * (1 - frac) * r
+                comm += c
                 qty *= frac
                 parts += 1
             qty *= q_now
@@ -447,7 +504,9 @@ class Engine:
             filled += 1
             node = quote_i if node == base_i else base_i
             t = t_f
-        usd_end = qty * up[node]
+        r, c = liq(node)
+        usd_end = qty * r                        # résiduel marqué exécutable (Conv. A)
+        comm += c
         return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm, why="",
                     fills=filled, dur=t - t0, parts=parts)
 

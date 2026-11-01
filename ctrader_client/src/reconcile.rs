@@ -30,15 +30,14 @@ pub fn venue_positions(
 ) -> Vec<(i64, f64)> {
     res.position
         .iter()
-        .filter_map(|p| {
+        .map(|p| {
             let t = &p.tradeData;
             let sign = match t.tradeSide {
                 ProtoOATradeSide::BUY => 1.0,
                 ProtoOATradeSide::SELL => -1.0,
             };
-            Some((t.symbolId, sign * t.volume as f64 / 100.0))
-        })
-        .collect()
+            (t.symbolId, sign * t.volume as f64 / 100.0)
+        }).collect()
 }
 
 /// Positions internes converties symbolId -> unités de base signées.
@@ -111,8 +110,8 @@ mod tests {
             payloadType: Some(ProtoOAPayloadType::PROTO_OA_RECONCILE_RES),
             ctidTraderAccountId: 1,
             position: vec![
-                pos(11, 100_000_00, ProtoOATradeSide::BUY),  // +100_000 base
-                pos(22, 50_000_00, ProtoOATradeSide::SELL),  // -50_000 base
+                pos(11, 10_000_000, ProtoOATradeSide::BUY),  // +100_000 base
+                pos(22, 5_000_000, ProtoOATradeSide::SELL),  // -50_000 base
             ],
             order: vec![],
         };

@@ -94,7 +94,7 @@ async fn venue_script(peer: &mut MockPeer, symbol_ids: &[i64], first_edge: u8) {
             ctidTraderAccountId: CTID,
             trader: ProtoOATrader {
                 accountType: Some(ProtoOAAccountType::NETTED),
-                balance: 100_000_00,
+                balance: 10_000_000,
                 ..Default::default()
             },
         },
@@ -404,7 +404,7 @@ async fn e2e_bootstrap_spot_order_reconcile() {
     assert!((quote.ask - 1.18350).abs() < 1e-9);
     // si moteur : fx_si[edge] -> index série trié (comme main.rs)
     let si_idx = engine.fx_si[edge as usize].expect("edge mappé");
-    engine.ingest(si_idx, quote.clone());
+    engine.ingest(si_idx, quote);
 
     // -- ordre LIMIT IOC envoyé, résolution FILLED sur le fil --
     let si = st.by_edge(edge).unwrap();

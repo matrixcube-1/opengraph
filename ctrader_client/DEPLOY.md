@@ -32,20 +32,41 @@ Source : Optuna `poc_exec_fxcur`, trial #87 (28 FX, 22+23/10 in-sample, holdout 
 | `spread_cap` | 1.76 | spread max = 1.76 × spread médian du symbole |
 | `comm_scale` | 1.10 | marge de sécurité de +10 % sur la commission |
 | `ddd_min` | 2.66 USD | net minimal (après commission) pour déclencher |
-| `q_min` | 0.5 | fraction de fill minimale, sinon abort + unwind |
+| `q_min` | 0.5 | fraction de fill minimale, sinon abort + unwind (câblée — audit m3) |
 | `leg_timeout_ms` | 2000 | résolution max d'une jambe IOC |
 | notionnel | 100 000 USD | ≈ 1 lot par jambe (0,75–1,7 lot selon la base) |
-| commission modèle | 3 $ / côté / 100 k unités de base | à confirmer sur les premiers fills démo |
-| tolérance IOC | ±2,4 bp (`IOC_TOL`) | limite = touche ± tol, arrondie aux digits |
+| commission modèle | 3 $ / côté / 100 k unités de base | à confirmer sur les premiers fills démo (`commission` journalisée, Mo8) |
+| tolérance IOC | ±2,08 bp (`IOC_TOL` = 3×τ calibré 0,69 bp — audit M7) | limite = touche ± tol, arrondie aux digits |
 | fenêtre | 07:00–21:00 Zurich, lun–ven | flatten à partir de 20:45, rien overnight |
 
 `cooldown` calibré ≈ 0,05 s : équivalent au comportement live (une seule séquence
 à la fois, nouvelle séquence dès la précédente résolue). Indicateurs de régime :
 télémétrie seulement, aucun gate.
 
-**Attente réaliste (simulation, pas une promesse)** : holdout 26/10 = +955 $ / 168 cycles
-sur 24 h, dont ≈ **+327 $ / 77 cycles dans la fenêtre Zurich**. La capture réelle sera
-inférieure (rejets, slippage, flux IC ≠ Dukascopy).
+**Attente réaliste (Convention A exécutable — chiffres corrigés post-audit)** :
+holdout 26/10 = **+61,58 $ / 12 cycles** sur 24 h (vs +955 $ sous l'ancien marquage
+au mid — bug C1), dont ≈ **+54,92 $ / 11 cycles dans la fenêtre Zurich**. Le résiduel
+est désormais **liquidé immédiatement** en fin de séquence (file d'unwind — C2),
+comme le marque la simulation ; rien n'est porté jusqu'au flatten. La capture réelle
+sera inférieure (rejets, slippage, flux IC ≠ Dukascopy, coût des débouclages réels
+≈ 1 ordre par jambe remplie).
+
+**Correctifs de l'audit externe (tous implémentés)** :
+- C1 : valorisation exécutable partout (POC, eval.rs, exec.rs, pybind).
+- C2 : résiduel liquidé immédiatement après `Done` — plus d'accumulation directionnelle.
+- C3 : plus de `sync(t0)` en live (les prix ne reculent jamais après un fill).
+- C4 : flatten dédupliqué contre la file d'unwind (`unwind_coverage`/`uncovered_job`) ;
+  fills orphelins (seq avortée en vol, fill tardif « L ») débouclés immédiatement ;
+  repompage filet de sécurité à chaque itération.
+- M5 : baseline reconcile exigée avant tout trade ; divergence à l'arrêt → halt + flatten.
+- M6 : débouclage retenté jusqu'à 5 fois (`UNWIND_MAX_ATTEMPTS`), reliquat IOC repompé.
+- Mo1 : events 2147/2164 → reconnexion ; 2172 → halt + flatten ; watchdog spots 30 s.
+- Mo2 : RPC vérifie le payloadType de la réponse (ErrorRes → `Venue`, jamais un faux succès).
+- Mo3 : warm-up 100 ticks/symbole avant tout trade (médiane de spread fiable).
+- Mo4 : breaker remisé après une session > 60 s (échecs consécutifs seulement).
+- Mo5 : fills partiels comptabilisés sur OrderError comme sur timeout.
+- Mo8 : `deal.commission` cumulée et journalisée sur LegFill/UnwindFill.
+- m3 : `q_min` du TOML câblé dans `PathExec` ; `symbolName` tolère « EUR/USD ».
 
 ## 3. Build et installation (serveur Linux, /opt/arb)
 
@@ -93,9 +114,11 @@ Contrôles en continu :
 `mode = "trade"`, `ctid_trader_account_id` renseigné. À vérifier dans le journal :
 - jambes envoyées / remplies / partielles / rejetées, `lat_ms` tick→envoi ;
 - **aucun rejet `INVALID_REQUEST` (digits du prix)** ou volume (min/step) ;
-- unwinds exécutés après abort, `Reconcile.divergent = false` ;
+- unwinds exécutés après abort ET après chaque séquence terminée (liquidation C2),
+  `Reconcile.divergent = false`, aucun `unwind_exhausted` ni `manual_check` ;
 - flatten 20:45–21:00 effectif, **aucune position overnight** ;
-- commission réellement débitée par fill vs modèle (3 $ / 100 k base).
+- commission réellement débitée par fill vs modèle (3 $ / 100 k base) — champ
+  `commission` des événements `leg_fill`/`unwind_fill`.
 
 ### Étape C — live
 Uniquement si la semaine démo est validée (critères §5). `env = "live"`
@@ -143,7 +166,7 @@ config.rs    TOML + secrets par env
 main.rs      bootstrap + boucle + housekeeping + reconnect/backoff/circuit breaker
 ```
 
-## Invariants testés (56 tests)
+## Invariants testés (58 tests)
 
 corrélation par `order.clientOrderId` ; jambe N+1 seulement après résolution de N ;
 fills crédités sur `deal.filledVolume` ; `frac_eff` sur la quantité envoyée ;

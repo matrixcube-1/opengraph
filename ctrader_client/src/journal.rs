@@ -51,6 +51,8 @@ pub enum JEvent {
         px_node: f64,
         order_id: i64,
         lat_ms: i64,
+        /// Commission venue débitée sur les fills (signée, devise du compte).
+        commission: f64,
     },
     /// Jambe non remplie (cancel/reject/timeout) -> abort.
     LegAbort {
@@ -76,6 +78,8 @@ pub enum JEvent {
         qty_base: f64,
         px_fill: f64,
         order_id: i64,
+        /// Commission venue débitée (signée).
+        commission: f64,
     },
     /// Bouclage modèle exec_settle (PnL sim + résiduel marqué).
     Settle {

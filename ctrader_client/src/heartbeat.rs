@@ -52,6 +52,12 @@ pub struct Backoff {
     attempt: u32,
 }
 
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Backoff {
     pub fn new() -> Self {
         Self { attempt: 0 }

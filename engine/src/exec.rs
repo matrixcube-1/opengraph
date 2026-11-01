@@ -106,6 +106,24 @@ impl Engine {
         // le marquage résiduel ne subit pas la garde de fraîcheur.
         let ok_all = vec![true; self.data.len()];
         let up = self.usd_price(&ok_all);
+        // Convention A stricte : résiduel -> taux de liquidation exécutable.
+        let up_liq = self.usd_liq_price(&ok_all);
+        let comm_liq = self.usd_liq_comm(&ok_all);
+        let liq = |node: usize| -> (f64, f64) {
+            let r = if up_liq[node].is_finite() {
+                up_liq[node]
+            } else {
+                up[node]
+            };
+            let c = if comm_liq[node].is_finite() {
+                comm_liq[node]
+            } else if up[node].is_finite() && up[node] > 0.0 {
+                COMM_PER_SIDE_USD / up[node]
+            } else {
+                COMM_PER_SIDE_USD
+            };
+            (r, c)
+        };
         let start = pt.p_s[pi] as usize;
         if !up[start].is_finite() || up[start] <= 0.0 {
             return None; // Python produirait pnl NaN ; refus explicite
@@ -178,7 +196,9 @@ impl Engine {
                 abort!(AbortReason::BelowQMin);
             }
             if frac < 1.0 {
-                cash += qty * (1.0 - frac) * up[node];
+                let (r, c) = liq(node);
+                cash += qty * (1.0 - frac) * r;
+                comm += c;
                 qty *= frac;
                 parts += 1;
             }
@@ -197,7 +217,9 @@ impl Engine {
             t = t_f;
         }
 
-        let usd_end = qty * up[node];
+        let (r_end, c_end) = liq(node);
+        comm += c_end;
+        let usd_end = qty * r_end;
         Some(ExecOutcome::Done {
             pnl_usd: usd_end + cash - NOTIONAL_USD - comm,
             filled_legs: filled,
@@ -206,15 +228,15 @@ impl Engine {
         })
     }
 
-    /// Quantité de départ en devise `p_s[pi]` à `t0` — `NOTIONAL/up[start]`.
-    /// Même état que `exec_seq` : `sync(t0)` + `usd_price` sur tous les mids.
+    /// Quantité de départ en devise `p_s[pi]` — `NOTIONAL/up[start]` sur
+    /// l'état COURANT (live : jamais de `sync`, qui rembobinerait les prix
+    /// — audit C3). En replay, appeler `sync(t0)` avant.
     /// Retourne None si la marque n'est pas finie positive (Python : NaN).
-    pub fn start_qty(&mut self, t0: i64, pi: usize, pt: &PathTables) -> Option<f64> {
+    pub fn start_qty(&mut self, pi: usize, pt: &PathTables) -> Option<f64> {
         let legs = &pt.paths[pi];
         for &e in legs {
             self.fx_si[e as usize]?;
         }
-        self.sync(t0);
         let ok_all = vec![true; self.data.len()];
         let up = self.usd_price(&ok_all);
         let u = up[pt.p_s[pi] as usize];
@@ -237,14 +259,13 @@ impl Engine {
     /// `exec_seq` : ni comm ni produit de la jambe fautive).
     ///
     /// Retourne `(pnl_usd, filled_legs, partial_legs, resid_usd)` où
-    /// `resid_usd` = valeur de la position restante marquée à `up[node]`
-    /// (état à `t0`) : pour `done` c'est la position finale incluse dans
-    /// le pnl ; pour `abort` c'est le résiduel abandonné que le proxy
-    /// `-12$/jambe` remplace — permet de mesurer l'écart proxy↔réel à
-    /// l'horizon de fin de run. None si la marque de départ manque.
+    /// `resid_usd` = valeur de la position restante marquée à la liquidation
+    /// EXÉCUTABLE (Convention A stricte) sur l'état COURANT — jamais de
+    /// `sync(t0)` en live (audit C3 : rembobiner publiait des prix périmés).
+    /// En replay, appeler `sync(t0)` avant pour l'état de départ.
+    /// None si la marque de départ manque.
     pub fn exec_settle(
         &mut self,
-        t0: i64,
         pi: usize,
         fills: &[(f64, f64)],
         aborted: bool,
@@ -254,9 +275,25 @@ impl Engine {
         for &e in legs {
             self.fx_si[e as usize]?;
         }
-        self.sync(t0);
         let ok_all = vec![true; self.data.len()];
         let up = self.usd_price(&ok_all);
+        let up_liq = self.usd_liq_price(&ok_all);
+        let comm_liq = self.usd_liq_comm(&ok_all);
+        let liq = |node: usize| -> (f64, f64) {
+            let r = if up_liq[node].is_finite() {
+                up_liq[node]
+            } else {
+                up[node]
+            };
+            let c = if comm_liq[node].is_finite() {
+                comm_liq[node]
+            } else if up[node].is_finite() && up[node] > 0.0 {
+                COMM_PER_SIDE_USD / up[node]
+            } else {
+                COMM_PER_SIDE_USD
+            };
+            (r, c)
+        };
         let mut node = pt.p_s[pi] as usize;
         if !up[node].is_finite() || up[node] <= 0.0 {
             return None;
@@ -271,7 +308,9 @@ impl Engine {
             let e = legs[li];
             let (a, b) = Self::edge_nodes(e);
             if frac < 1.0 {
-                cash += qty * (1.0 - frac) * up[node];
+                let (r, c) = liq(node);
+                cash += qty * (1.0 - frac) * r;
+                comm += c;
                 qty *= frac;
                 parts += 1;
             }
@@ -289,7 +328,15 @@ impl Engine {
             };
         }
 
-        let resid_usd = qty * up[node];
+        // Liquidation exécutable du résiduel — seulement si une position
+        // existe réellement (abort à 0 fill : rien n'a été acheté).
+        let (r_end, c_end) = liq(node);
+        let resid_usd = if filled > 0 {
+            comm += c_end;
+            qty * r_end
+        } else {
+            0.0
+        };
         let pnl = if aborted {
             -(ABORT_COST_PER_LEG_USD * filled as f64) + cash - comm
         } else {
@@ -386,11 +433,14 @@ mod tests {
         else {
             panic!("attendu Done");
         };
-        // qty JPY -> CAD à 1/ask ; marquage up[CAD] ; comm = 3/up[CAD]
+        // qty JPY -> CAD à 1/ask ; marquage EXÉCUTABLE CAD->USD (1/ask
+        // USDCAD = 1/(1.35*1.0001)) ; comm jambe 3/up[CAD] + comm liq 3.
         let mid = ups[5] / ups[3] * 0.995;
         let ask = mid * 1.0001;
         let qty = 100_000.0 / ups[3] / ask;
-        let expected = qty * ups[5] - 100_000.0 - COMM_PER_SIDE_USD / ups[5];
+        let usdcad_ask = 1.35 * 1.0001;
+        let expected = qty / usdcad_ask - 100_000.0
+            - COMM_PER_SIDE_USD / ups[5] - COMM_PER_SIDE_USD;
         assert!((pnl_usd - expected).abs() < 1e-6);
         assert_eq!(dur_ms, 2.5);
         assert_eq!(filled_legs, 1);
@@ -559,8 +609,9 @@ mod tests {
             fills.push((1.0, px));
             node = if node == a { b } else { a };
         }
+        e.sync(1_000); // replay : état à t0 (sync hors de exec_settle — C3)
         let (pnl_s, filled_s, parts_s, _resid_s) =
-            e.exec_settle(1_000, pi, &fills, false, &pt).unwrap();
+            e.exec_settle(pi, &fills, false, &pt).unwrap();
         let ExecOutcome::Done {
             pnl_usd,
             filled_legs,
@@ -585,7 +636,8 @@ mod tests {
         let mut e = Engine::new(book_distorted());
         let pt = build_tables();
         let pi = path_jpy_cad(&pt); // 1 jambe JPY->CAD, filled=0
-        let (pnl, filled, parts, _resid) = e.exec_settle(1_000, pi, &[], true, &pt).unwrap();
+        e.sync(1_000);
+        let (pnl, filled, parts, _resid) = e.exec_settle(pi, &[], true, &pt).unwrap();
         assert_eq!((pnl, filled, parts), (0.0, 0, 0)); // -12*0+0-0
 
         // même jambe mais remplie puis abort « impossible » : pour un
@@ -593,14 +645,18 @@ mod tests {
         let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
         let (_, _, ask, _, _) = e.quote_at_f(si, 1_000.0).unwrap();
         let (pnl2, filled2, _, resid2) = e
-            .exec_settle(1_000, pi, &[(1.0, 1.0 / ask)], true, &pt)
+            .exec_settle(pi, &[(1.0, 1.0 / ask)], true, &pt)
             .unwrap();
         assert_eq!(filled2, 1);
         let up_cad = 1.0 / 1.35; // up[CAD] du fixture (ups[5])
-        let comm = crate::fees::COMM_PER_SIDE_USD / up_cad;
+        // comm = jambe CADJPY (COMM/up[CAD]) + liquidation CAD->USD (COMM,
+        // paire inverse USDCAD -> base USD)
+        let comm = crate::fees::COMM_PER_SIDE_USD / up_cad
+            + crate::fees::COMM_PER_SIDE_USD;
         assert!((pnl2 - (-12.0 - comm)).abs() < 1e-9);
-        // resid_usd = position abandonnée marquée up[CAD] : 15M JPY -> CAD
-        assert!((resid2 - 15e6 / ask * up_cad).abs() < 1e-6);
+        // resid_usd = position abandonnée marquée exécutable : 15M JPY ->
+        // CAD liquidés à 1/ask(USDCAD)
+        assert!((resid2 - 15e6 / ask / (1.35 * 1.0001)).abs() < 1e-6);
     }
 
     /// Partiel 60 % via settle = même résiduel cash que exec_seq partiel.
@@ -622,13 +678,14 @@ mod tests {
         // fill constaté : frac 0.6 à la quote du fill (tick 1002)
         let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
         let (_, _, ask_f, _, _) = e.quote_at_f(si, 1_002.0).unwrap();
+        e.sync(1_000);
         let (pnl_s, _, parts_s, residp) = e
-            .exec_settle(1_000, pi, &[(0.6, 1.0 / ask_f)], false, &pt)
+            .exec_settle(pi, &[(0.6, 1.0 / ask_f)], false, &pt)
             .unwrap();
         assert_eq!(parts_s, 1);
         assert!((pnl_s - pnl_usd).abs() / pnl_usd.abs().max(1.0) < 1e-12);
-        // resid_usd = qty_end(=15M*0.6/ask_f) marqué up[CAD]
-        assert!((residp - 15e6 * 0.6 / ask_f * (1.0 / 1.35)).abs() < 1e-6);
+        // resid_usd = qty_end(=15M*0.6/ask_f) marqué exécutable (1/ask USDCAD)
+        assert!((residp - 15e6 * 0.6 / ask_f / (1.35 * 1.0001)).abs() < 1e-6);
     }
 
     /// `start_qty` = NOTIONAL / up[start] — JPY : 100 k x 150.
@@ -637,7 +694,8 @@ mod tests {
         let mut e = Engine::new(book_distorted());
         let pt = build_tables();
         let pi = path_jpy_cad(&pt);
-        let q = e.start_qty(1_000, pi, &pt).unwrap();
+        e.sync(1_000);
+        let q = e.start_qty(pi, &pt).unwrap();
         assert!((q - 100_000.0 * 150.0).abs() < 1e-6);
     }
 }

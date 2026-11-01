@@ -57,6 +57,43 @@
   Avec XAUUSD/XAGUSD seuls, aucun saut intérieur n'existe (mono-USD).
 - Verdict Optuna (holdout 26/10) : mixte #179 +894 $ < FX #87 +955 $.
 
+## Correction Convention A (audit externe, nov. 2026)
+- L'audit a prouvé que le marquage résiduel était au **mid** (`usd_price`),
+  pas aux prix exécutables : les +955 $ du holdout étaient un artefact
+  comptable. Corrigé partout : `_usd_liq` dans `poc_engine.py`,
+  `usd_liq_price`/`usd_liq_comm` dans `engine` (eval, exec_seq, exec_settle,
+  usd_marks). La devise terminale est désormais valorisée à la liquidation
+  exécutable (bid/ask de sa paire USD) + commission de liquidation.
+- Rejeu #87 holdout 26/10 sous Convention A stricte : **+61,58 $ / 12 trades /
+  0 abort** (vs +954,76 sous mid) ; fenêtre live : +54,92 / 11 cycles.
+  Les paramètres #87 sont indicatifs : la calibration Optuna s'est faite
+  sous marquage mid — recalibrage sous Convention A stricte requis avant
+  tout mode trade.
+- Audit C3 corrigé : `start_qty`/`exec_settle` ne font plus `sync(t0)` en
+  live (les bindings pybind font un `sync` explicite pour le replay).
+- Audit m1/m2 corrigés : skip `_net0 < ddd_min` supprimé (borne fausse) ;
+  médiane de spread = in-sample seul (`MED_CUTOFF`).
+- Bloc `ctrader_client` corrigé (voir DEPLOY.md §2 pour le détail) :
+  C2 résiduel liquidé immédiatement après `Done` (file d'unwind) ;
+  C4 flatten dédupliqué (`unwind_coverage`/`uncovered_job` dans exec.rs),
+  fills orphelins débouclés, repompage filet de sécurité ;
+  M5 baseline reconcile exigée + divergence→halt ; M6 retry débouclage ×5 ;
+  Mo1 events 2147/2164→Dead, 2172→halt, watchdog spots 30 s ;
+  Mo2 RPC vérifie payloadType ; Mo3 warm-up 100 ticks/symbole ;
+  Mo4 breaker sur échecs consécutifs ; Mo5 partiels OrderError comptés ;
+  Mo8 `deal.commission` journalisée ; M7 IOC_TOL=2,08 bp (3×τ) ;
+  m3 `q_min` câblé ; `symbolName` tolère « EUR/USD ».
+- Mo7 (choix de conception, non corrigé) : le POC n'évalue que des instants
+  échantillonnés (move_gate 0,25 / eval_every 500 ms) ; le live évalue à
+  chaque tick — l'ensemble des trades diffèrera, la fréquence detect est
+  indicative seulement.
+- Nouveau holdout propre = 27/10 (le 26/10 est « brûlé » — M2 : réutilisé
+  plusieurs fois pendant les campagnes). Recalibrage sous Convention A
+  stricte requis avant tout mode trade.
+- SSH serveur durci : `PasswordAuthentication no`, `PermitRootLogin
+  prohibit-password`, `KbdInteractiveAuthentication no`
+  (`/etc/ssh/sshd_config.d/00-arb-hardening.conf`).
+
 ## Téléchargement Dukascopy (dukascopy-node 1.51.0)
 - `-to` est EXCLUSIF : pour un mois complet, `-to` = 1er jour du mois suivant.
 - Rythme : un seul processus pour tout le serveur, `-bs 1 -bp 1000` (≈1 req/s).

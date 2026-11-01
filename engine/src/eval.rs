@@ -8,9 +8,9 @@
 //! rate      = bid   si nœud courant == base (vente base->quote)
 //!             1/ask si nœud courant == quote (achat quote->base)
 //! qty0      = NOTIONAL / up[start]
-//! usd_out   = qty0 x prod(rate) x up[end]
+//! usd_out   = qty0 x prod(rate) x up_liq[end]  (liquidation exécutable)
 //! comm_leg  = COMM / up[base(leg)]   (par jambe existante seulement)
-//! net       = usd_out - NOTIONAL - comm_leg_total x comm_scale
+//! net       = usd_out - NOTIONAL - (comm_leg + comm_liq[end]) x comm_scale
 //! ```
 //!
 //! Chemin invalide si : jambe non chargée, jambe non fx_ok, qty0/usd_out/comm
@@ -45,6 +45,10 @@ impl Engine {
         let n = self.data.len();
         let ok: Vec<bool> = (0..n).map(|i| self.ok(i, t, fresh_ms)).collect();
         let up = self.usd_price(&ok);
+        // Convention A stricte : la devise terminale est valorisée au taux de
+        // liquidation exécutable + commission de cette jambe (jamais au mid).
+        let up_liq = self.usd_liq_price(&ok);
+        let comm_liq = self.usd_liq_comm(&ok);
         // spread relatif vs médian — cap appliqué aux arêtes FX uniquement
         let fx_ok: Vec<bool> = (0..n)
             .map(|i| {
@@ -91,8 +95,9 @@ impl Engine {
             } else {
                 f64::NAN
             };
-            let usd_out = qty0 * rate * up[pt.p_end[pi] as usize];
-            let comm_fx = comm * comm_scale;
+            let end = pt.p_end[pi] as usize;
+            let usd_out = qty0 * rate * up_liq[end];
+            let comm_fx = (comm + comm_liq[end]) * comm_scale;
             if !(usd_out.is_finite() && up_s.is_finite() && comm_fx.is_finite()) {
                 continue;
             }
@@ -191,12 +196,13 @@ mod tests {
         assert_eq!(path[0], e_idx);
         assert_eq!(pt.p_dir[r.path_idx][0], -1); // départ côté quote (JPY)
 
-        // net attendu : qty0 JPY x (1/ask_reel) x up[CAD] - 1e5 - comm
+        // net attendu : qty0 JPY x (1/ask_reel) -> CAD liquidés exécutable
+        // à 1/ask(USDCAD) ; comm = jambe CADJPY (COMM/up[CAD]) + liq (COMM).
         let mid_cadjpy = ups[5] / ups[3] * 0.995;
         let ask = mid_cadjpy * 1.0001;
         let qty0 = 100_000.0 / ups[3];
-        let usd_out = qty0 * (1.0 / ask) * ups[5];
-        let comm = COMM_PER_SIDE_USD / ups[5];
+        let usd_out = qty0 * (1.0 / ask) / (1.35 * 1.0001);
+        let comm = COMM_PER_SIDE_USD / ups[5] + COMM_PER_SIDE_USD;
         let expected = usd_out - 100_000.0 - comm;
         assert!((r.net_usd - expected).abs() < 1e-6);
         assert!(r.net_usd > 0.0);

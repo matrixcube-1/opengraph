@@ -12,6 +12,7 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
+use crate::fees::COMM_PER_SIDE_USD;
 use crate::quote::Quote;
 use crate::universe::{pair_nodes, CURR, FX};
 
@@ -257,12 +258,11 @@ impl Engine {
                 s.avol[n] = q.vol;
                 s.bvol[n] = q.vol;
             } else {
-                debug_assert!(
-                    s.ts.last().is_none_or(|&last| q.ts_ms > last),
-                    "tick hors ordre si={si} ts={} > last={:?} attendu",
-                    q.ts_ms,
-                    s.ts.last()
-                );
+                if !s.ts.last().is_none_or(|&last| q.ts_ms > last) {
+                    // tick hors ordre : rejeté aussi en release — l'insérer
+                    // casserait `partition_point` (sync / quote_at).
+                    return;
+                }
                 s.ts.push(q.ts_ms);
                 s.bid.push(q.bid);
                 s.ask.push(q.ask);
@@ -346,6 +346,56 @@ impl Engine {
             up[i] = if direct { m } else { 1.0 / m };
         }
         up
+    }
+
+    /// Prix USD EXÉCUTABLE de liquidation par nœud (Convention A stricte) :
+    /// `cUSD` -> bid (on vend la devise) ; `USDc` -> 1/ask (on achète USD).
+    /// NaN si paire absente ou non `ok`. USD = 1.
+    pub fn usd_liq_price(&self, ok: &[bool]) -> [f64; 8] {
+        let mut up = [f64::NAN; 8];
+        up[0] = 1.0;
+        for (i, &c) in CURR.iter().enumerate() {
+            if c == "USD" {
+                continue;
+            }
+            let Some((si, direct)) = self.up_pair[i] else {
+                continue;
+            };
+            if !ok[si] {
+                continue;
+            }
+            up[i] = if direct {
+                self.bid[si]
+            } else {
+                1.0 / self.ask[si]
+            };
+        }
+        up
+    }
+
+    /// Commission de la jambe de liquidation nœud -> USD (modèle COMM/100k
+    /// de la devise de base de la paire USD). `cUSD` -> COMM/mid ;
+    /// `USDc` -> COMM ; USD -> 0. NaN si paire absente ou non `ok`.
+    pub fn usd_liq_comm(&self, ok: &[bool]) -> [f64; 8] {
+        let mut c = [f64::NAN; 8];
+        c[0] = 0.0;
+        for (i, &cur) in CURR.iter().enumerate() {
+            if cur == "USD" {
+                continue;
+            }
+            let Some((si, direct)) = self.up_pair[i] else {
+                continue;
+            };
+            if !ok[si] {
+                continue;
+            }
+            c[i] = if direct {
+                COMM_PER_SIDE_USD / (0.5 * (self.bid[si] + self.ask[si]))
+            } else {
+                COMM_PER_SIDE_USD
+            };
+        }
+        c
     }
 
     /// Indices de devises d'une arête : `(base, quote)`.

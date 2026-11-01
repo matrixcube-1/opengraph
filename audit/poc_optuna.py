@@ -103,11 +103,9 @@ def replay(eng, cands, p):
     for t, _pi0, _net0, _ddd0 in cands:
         if t < t_free:
             continue
-        # borne prouvee : net_stocké = argmax sous bornes généreuses du scan
-        # (fresh<=2000, cap<=3.0, comm_scale=1) >= tout net ré-évalué sous les
-        # bornes plus serrées du trial -> si déjà < ddd_min, l'éval est vaine
-        if _net0 < p["ddd_min"]:
-            continue
+        # NB : pas de skip `_net0 < ddd_min` — audit m1 : la borne est fausse
+        # (l'état après sync(t) peut différer du scan ; 1 217 contre-exemples
+        # relevés, écart max +5,95 $). On ré-évalue toujours.
         eng.sync(int(t))
         ev = eng.eval_at(int(t), p["fresh_ms"], p["spread_cap"], p["comm_scale"],
                          rows=eng.IDX_FX)

@@ -175,7 +175,10 @@ impl PyEngine {
     fn start_qty(&mut self, py: Python<'_>, t0: i64, pi: usize) -> Option<f64> {
         let eng = &mut self.eng;
         let pt = &self.pt;
-        py.detach(move || eng.start_qty(t0, pi, pt))
+        py.detach(move || {
+            eng.sync(t0); // replay : état à t0 (le sync a quitté start_qty — C3)
+            eng.start_qty(pi, pt)
+        })
     }
 
     /// Nœud terminal du chemin `pi` (devise du résiduel des chemins
@@ -184,14 +187,15 @@ impl PyEngine {
         self.pt.p_end[pi] as usize
     }
 
-    /// Prix USD mid des 8 devises à `t` (sync interne) — marquage des
-    /// positions résiduelles ouvertes à l'horizon de fin de run.
+    /// Prix USD EXÉCUTABLES de liquidation des 8 devises à `t` (sync
+    /// interne) — marquage Convention A des positions résiduelles ouvertes
+    /// à l'horizon de fin de run (jamais au mid).
     fn usd_marks(&mut self, py: Python<'_>, t: i64) -> Vec<f64> {
         let eng = &mut self.eng;
         py.detach(move || {
             eng.sync(t);
             let ok = vec![true; eng.data.len()];
-            eng.usd_price(&ok).to_vec()
+            eng.usd_liq_price(&ok).to_vec()
         })
     }
 
@@ -206,9 +210,9 @@ impl PyEngine {
     /// `aborted` → `pnl = -12*filled + cash - comm` (la jambe avortée ne
     /// contribue rien — conservatisme identique à `exec_seq`).
     /// Retourne `(pnl_usd, filled_legs, partial_legs, resid_usd)` où
-    /// `resid_usd` = position restante marquée `up[node]` à `t0` —
-    /// position finale (`done`) ou résiduel abandonné (`abort`), pour le
-    /// marquage à l'horizon de fin de run.
+    /// `resid_usd` = position restante marquée à la liquidation EXÉCUTABLE
+    /// (Convention A stricte) — position finale (`done`) ou résiduel
+    /// abandonné (`abort`), pour le marquage à l'horizon de fin de run.
     fn exec_settle(
         &mut self,
         py: Python<'_>,
@@ -219,7 +223,10 @@ impl PyEngine {
     ) -> Option<(f64, u8, u8, f64)> {
         let eng = &mut self.eng;
         let pt = &self.pt;
-        py.detach(move || eng.exec_settle(t0, pi, &fills, aborted, pt))
+        py.detach(move || {
+            eng.sync(t0); // replay : état à t0 (le sync a quitté exec_settle — C3)
+            eng.exec_settle(pi, &fills, aborted, pt)
+        })
     }
 
     /// Exécution déterministe E1-E9 du chemin `pi` détecté à `t0` —

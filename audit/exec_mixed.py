@@ -6,13 +6,16 @@ import time
 
 import numpy as np
 
-from poc_engine import Engine, enum_paths
+from poc_engine import Engine, enum_paths, FX, METAL_SYM
 
 LAT, TAU, QMIN = 5.0, 24.0, 0.5   # paramètres POC usuels
 
 
 def main():
-    e = Engine(mixed=True, verbose=False)
+    # seuls les symboles FX + métaux servent aux chemins (sync allègre :
+    # pas de marche tick-par-tick sur les arrays d'indices géants)
+    metal_syms = [ms for cs in METAL_SYM.values() for ms in cs.values()]
+    e = Engine(syms=FX + metal_syms, mixed=True, verbose=False)
     paths, _ = enum_paths(True)
     ism = np.array([any(isinstance(x, tuple) and x[0] == "X" for x in p)
                     for p in paths])
@@ -23,6 +26,7 @@ def main():
     fx = sel[~msk]
     rng = np.random.default_rng(7)
     fx_s = fx[rng.choice(len(fx), min(len(mix) * 3, len(fx)), replace=False)]
+    fx_s = fx_s[np.argsort(fx_s[:, 0])]   # ordre t -> marche monotone
 
     def run(rows, label):
         n = len(rows)
@@ -38,11 +42,11 @@ def main():
             pnls.append(r["pnl"])
         p = np.array(pnls)
         print(f"{label}: n={n} exec={len(p)} done={dones} abort={aborts} "
-              f"({100*aborts/max(len(p),1):.1f}%)")
+              f"({100*aborts/max(len(p),1):.1f}%)", flush=True)
         if len(p):
             print(f"   pnl: moy={p.mean():7.2f} med={np.median(p):7.2f} "
                   f"p10={np.percentile(p,10):7.2f} p90={np.percentile(p,90):7.2f} "
-                  f"sum={p.sum():9.2f} win%={100*(p>0).mean():.1f}")
+                  f"sum={p.sum():9.2f} win%={100*(p>0).mean():.1f}", flush=True)
         return p
 
     pm = run(mix, "MIXTE ddd>2.5")

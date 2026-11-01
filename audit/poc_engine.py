@@ -318,8 +318,12 @@ class Engine:
         usd_out = qty_end * up_end * ratio_b
         valid_path = all_ok & np.isfinite(usd_out) & np.isfinite(up_s) & (~has_b | b_ok)
         comm_fx = comm_leg.sum(1) * comm_scale
+        # P_CB (commissions métal/bout, meme modele notionnel cTrader) passe
+        # aussi par comm_scale — sinon un hop metal echapperait a la
+        # robustesse commission que subissent les jambes FX.
         net = np.where(valid_path & np.isfinite(comm_fx),
-                       usd_out - NOTIONAL - comm_fx - self.P_CB[R], -np.inf)
+                       usd_out - NOTIONAL - comm_fx - self.P_CB[R] * comm_scale,
+                       -np.inf)
         pi = int(np.argmax(net))
         if not np.isfinite(net[pi]):
             return None

@@ -114,6 +114,11 @@ pub enum JEvent {
     },
     /// Événement système (connexion, auth, session, watchdog, flatten).
     System { msg: String },
+    /// Quote reconstruite (bid/ask forward-fillés) telle qu'ingérée par le
+    /// moteur — flux haute fréquence dans un journal `ticks/` séparé :
+    /// matière première de la calibration sur données venue réelles.
+    /// `e` = indice d'arête FX (0..27, ordre `universe::FX`).
+    Tick { e: u8, bid: f64, ask: f64 },
 }
 
 /// Journal append-only : `journal/YYYY-MM-DD.jsonl`.
@@ -220,6 +225,28 @@ mod tests {
         assert!(l1.contains("\"ev\":\"system\"") && l1.contains("boot"));
         assert!(l1.contains("\"ev\":\"opportunity\"") && l1.contains("\"net_usd\":3.25"));
         assert!(l2.contains("next day"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Les ticks capturés alimentent la calibration sur flux venue :
+    /// la ligne doit porter edge + bid/ask reconstruits + ts (champ racine).
+    #[test]
+    fn tick_event_serializes_compact() {
+        let dir = std::env::temp_dir().join(format!("og_jnl_tick_{}", std::process::id()));
+        let j = Journal::new(dir.to_str().unwrap()).unwrap();
+        j.log(
+            1_793_016_000_123,
+            &JEvent::Tick {
+                e: 22,
+                bid: 91.472,
+                ask: 91.493,
+            },
+        );
+        let f = dir.join("2026-10-26.jsonl");
+        let l = std::fs::read_to_string(&f).unwrap();
+        assert!(l.contains("\"ev\":\"tick\""), "ligne: {l}");
+        assert!(l.contains("\"e\":22") && l.contains("\"bid\":91.472") && l.contains("\"ask\":91.493"));
+        assert!(l.contains("\"ts\":1793016000123"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

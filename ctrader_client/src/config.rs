@@ -113,6 +113,10 @@ pub struct Config {
     /// Intervalle reconcile positions (s).
     #[serde(default = "d_rec")]
     pub reconcile_s: u64,
+    /// Enregistre chaque quote reconstruite dans `journal_dir/ticks/`
+    /// (calibration sur le flux venue réel — ~50–150 lignes/s).
+    #[serde(default = "d_true")]
+    pub record_ticks: bool,
     #[serde(default)]
     pub engine: EngineParams,
 }

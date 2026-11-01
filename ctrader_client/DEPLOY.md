@@ -110,6 +110,14 @@ Contrôles en continu :
   Beaucoup moins ⇒ l'edge venait du flux Dukascopy : on s'arrête là ;
 - distribution du `net_usd` et répartition horaire.
 
+**Capture du flux (calibration venue)** : `record_ticks = true` (défaut)
+écrit chaque quote reconstruite dans `journal_dir/ticks/YYYY-MM-DD.jsonl`
+(`{"ev":"tick","e":i,"bid":..,"ask":..,"ts":..}`, ~50–150 lignes/s). Pipeline
+live : `audit/ticks_to_poc.py convert TICKS_DIR OUT_DIR` produit les CSV
+horaires au format `load_sym`, puis `scan OUT_DIR DAY...` → `cand_*.npz` →
+même chaîne Optuna que la calibration Dukascopy. Les paramètres recalibrés
+sur flux IC remplacent alors les #87 (calibrés Dukascopy) avant `trade`.
+
 ### Étape B — démo `trade` (1 semaine)
 `mode = "trade"`, `ctid_trader_account_id` renseigné. À vérifier dans le journal :
 - jambes envoyées / remplies / partielles / rejetées, `lat_ms` tick→envoi ;

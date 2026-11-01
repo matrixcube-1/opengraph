@@ -230,10 +230,13 @@ struct State {
     /// à un seul côté (cTrader n'envoie que le côté qui change). Reset à
     /// chaque session : le premier event après subscribe porte les deux.
     last_px: [Option<(f64, f64)>; 28],
+    /// Journal dédié aux ticks (`journal_dir/ticks/`) — matière première
+    /// de la calibration sur le flux venue réel (config `record_ticks`).
+    tick_j: Option<Journal>,
 }
 
 impl State {
-    fn new(ctid: i64) -> Self {
+    fn new(ctid: i64, tick_dir: Option<&str>) -> Self {
         Self {
             engine: Engine::live(),
             pt: build_tables(),
@@ -253,6 +256,7 @@ impl State {
             halted: false,
             last_spot_ms: 0,
             last_px: [None; 28],
+            tick_j: tick_dir.and_then(|d| Journal::new(d).ok()),
         }
     }
 
@@ -898,6 +902,11 @@ async fn handle_frame(
             let t = q.ts_ms;
             st.engine.ingest(si_idx, q);
             st.last_spot_ms = now_ms();
+            // Capture du flux venue (avant toutes les portes) : calibration
+            // sur données réelles — e = indice FX, ts = timestamp venue.
+            if let Some(tj) = &st.tick_j {
+                tj.log(t, &JEvent::Tick { e: edge, bid: q.bid, ask: q.ask });
+            }
             if st.warm_ticks[edge as usize] < WARMUP_TICKS {
                 st.warm_ticks[edge as usize] += 1;
                 if st.warmed() && !st.warm_logged {
@@ -1170,7 +1179,12 @@ async fn run_session(
     journal: &Journal,
 ) -> Result<(), ClientError> {
     let (ctid, sym) = bootstrap(handle, cfg, secrets, journal).await?;
-    let mut st = State::new(ctid);
+    let mut st = State::new(
+        ctid,
+        cfg.record_ticks
+            .then(|| format!("{}/ticks", cfg.journal_dir))
+            .as_deref(),
+    );
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_hb = Instant::now();

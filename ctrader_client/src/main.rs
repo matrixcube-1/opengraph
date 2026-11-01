@@ -24,7 +24,7 @@ use ctrader_client::exec::{
     UnwindJob, UNWIND_MAX_ATTEMPTS,
 };
 use ctrader_client::heartbeat::{heartbeat_msg, Backoff, HB_SEND, HB_WATCHDOG};
-use ctrader_client::journal::{JEvent, Journal};
+use ctrader_client::journal::{JEvent, Journal, TickLog};
 use ctrader_client::net::{
     connect, decode_payload, dispatch_response, encode_payload, rpc, spawn, Incoming,
     NetHandle,
@@ -232,11 +232,14 @@ struct State {
     last_px: [Option<(f64, f64)>; 28],
     /// Journal dédié aux ticks (`journal_dir/ticks/`) — matière première
     /// de la calibration sur le flux venue réel (config `record_ticks`).
-    tick_j: Option<Journal>,
+    /// Plafonné disque (`tick_cap_mb`) — arrêt latched au-delà.
+    tick_j: Option<TickLog>,
+    /// Plafond ticks atteint → événement System journalisé une fois.
+    tick_stopped: bool,
 }
 
 impl State {
-    fn new(ctid: i64, tick_dir: Option<&str>) -> Self {
+    fn new(ctid: i64, tick_j: Option<TickLog>) -> Self {
         Self {
             engine: Engine::live(),
             pt: build_tables(),
@@ -256,7 +259,8 @@ impl State {
             halted: false,
             last_spot_ms: 0,
             last_px: [None; 28],
-            tick_j: tick_dir.and_then(|d| Journal::new(d).ok()),
+            tick_j,
+            tick_stopped: false,
         }
     }
 
@@ -905,7 +909,15 @@ async fn handle_frame(
             // Capture du flux venue (avant toutes les portes) : calibration
             // sur données réelles — e = indice FX, ts = timestamp venue.
             if let Some(tj) = &st.tick_j {
-                tj.log(t, &JEvent::Tick { e: edge, bid: q.bid, ask: q.ask });
+                if !tj.log(t, edge, q.bid, q.ask) && !st.tick_stopped {
+                    st.tick_stopped = true;
+                    journal.log(now_ms(), &JEvent::System {
+                        msg: format!(
+                            "capture ticks stoppée : plafond {} Mio atteint",
+                            cfg.tick_cap_mb
+                        ),
+                    });
+                }
             }
             if st.warm_ticks[edge as usize] < WARMUP_TICKS {
                 st.warm_ticks[edge as usize] += 1;
@@ -1181,9 +1193,18 @@ async fn run_session(
     let (ctid, sym) = bootstrap(handle, cfg, secrets, journal).await?;
     let mut st = State::new(
         ctid,
-        cfg.record_ticks
-            .then(|| format!("{}/ticks", cfg.journal_dir))
-            .as_deref(),
+        if cfg.record_ticks {
+            let dir = format!("{}/ticks", cfg.journal_dir);
+            match TickLog::new(&dir, cfg.tick_cap_mb * 1_048_576) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::error!(error = %e, "tick journal indisponible");
+                    None
+                }
+            }
+        } else {
+            None
+        },
     );
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

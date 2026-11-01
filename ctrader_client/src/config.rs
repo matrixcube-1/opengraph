@@ -117,6 +117,10 @@ pub struct Config {
     /// (calibration sur le flux venue réel — ~50–150 lignes/s).
     #[serde(default = "d_true")]
     pub record_ticks: bool,
+    /// Plafond cumulé du dossier ticks/ en Mio (arrêt d'écriture latched,
+    /// existant inclus). Le journal métier n'est pas concerné.
+    #[serde(default = "d_tickcap")]
+    pub tick_cap_mb: u64,
     #[serde(default)]
     pub engine: EngineParams,
 }
@@ -128,6 +132,9 @@ fn d_true() -> bool {
 }
 fn d_rec() -> u64 {
     30
+}
+fn d_tickcap() -> u64 {
+    10_240
 }
 
 /// Secrets — variables d'environnement obligatoires.

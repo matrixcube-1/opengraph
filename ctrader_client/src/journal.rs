@@ -166,10 +166,11 @@ impl Journal {
 
     /// Append une ligne JSON `{"ts":ms,"ev":...}` — flush à chaque écriture
     /// (le journal perd sa valeur si le process crashe entre les fills).
-    pub fn log(&self, ts_ms: i64, ev: &JEvent) {
+    /// Retourne les octets écrits (0 si échec) — sert au plafond TickLog.
+    pub fn log(&self, ts_ms: i64, ev: &JEvent) -> usize {
         if let Err(e) = self.ensure(ts_ms) {
             tracing::error!(error = %e, "journal: ouverture impossible");
-            return;
+            return 0;
         }
         // serde interdit `flatten` + tag interne : on sérialise l'enum
         // en Value puis on insère "ts" dans l'objet racine.
@@ -182,10 +183,61 @@ impl Journal {
         };
         let mut g = self.file.lock().unwrap();
         if let Some(f) = g.as_mut() {
-            if let Err(e) = writeln!(f, "{line}").and_then(|_| f.flush()) {
-                tracing::error!(error = %e, "journal: écriture impossible");
+            match writeln!(f, "{line}").and_then(|_| f.flush()) {
+                Ok(()) => return line.len() + 1,
+                Err(e) => tracing::error!(error = %e, "journal: écriture impossible"),
             }
         }
+        0
+    }
+}
+
+/// Journal de ticks plafonné — arrêt d'écriture (latched) au-delà de `cap`
+/// octets cumulés, fichiers préexistants au démarrage inclus. Protection
+/// disque de la capture venue ; le journal métier n'est JAMAIS plafonné.
+pub struct TickLog {
+    j: Journal,
+    cap: u64,
+    written: Mutex<u64>,
+    stopped: Mutex<bool>,
+}
+
+impl TickLog {
+    /// `cap` en octets, couvre l'existant du dossier + les écritures à venir.
+    pub fn new(dir: &str, cap: u64) -> Result<Self, ClientError> {
+        let j = Journal::new(dir)?;
+        // fs::metadata(path) — pas DirEntry::metadata : sur Windows la taille
+        // du répertoire est parfois en cache juste après une écriture.
+        let existing: u64 = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0))
+                    .sum()
+            })
+            .unwrap_or(0);
+        Ok(Self {
+            j,
+            cap,
+            stopped: Mutex::new(existing >= cap),
+            written: Mutex::new(existing),
+        })
+    }
+
+    /// Écrit un tick ; `false` quand le plafond est atteint (définitif).
+    pub fn log(&self, ts_ms: i64, e: u8, bid: f64, ask: f64) -> bool {
+        if *self.stopped.lock().unwrap() {
+            return false;
+        }
+        let n = self.j.log(ts_ms, &JEvent::Tick { e, bid, ask }) as u64;
+        if n == 0 {
+            return true; // échec d'écriture : on réessaiera, sans latch
+        }
+        let mut w = self.written.lock().unwrap();
+        *w += n;
+        if *w >= self.cap {
+            *self.stopped.lock().unwrap() = true;
+        }
+        true
     }
 }
 
@@ -225,6 +277,31 @@ mod tests {
         assert!(l1.contains("\"ev\":\"system\"") && l1.contains("boot"));
         assert!(l1.contains("\"ev\":\"opportunity\"") && l1.contains("\"net_usd\":3.25"));
         assert!(l2.contains("next day"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Le TickLog respecte le plafond disque : arrêt d'écriture au-delà
+    /// du cap (fichiers existants au démarrage compris), état latched.
+    #[test]
+    fn tick_log_respects_cap() {
+        let dir = std::env::temp_dir().join(format!("og_tickcap_{}", std::process::id()));
+        let tl = TickLog::new(dir.to_str().unwrap(), 200).unwrap();
+        let mut wrote = 0u32;
+        for _ in 0..20 {
+            if tl.log(1_793_016_000_123, 0, 1.0830, 1.0834) {
+                wrote += 1;
+            }
+        }
+        assert!(wrote >= 1 && wrote < 20, "wrote={wrote}");
+        let total: u64 = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+            .sum();
+        assert!(total <= 200 + 96, "total={total} depasse cap+marge");
+        // restart : l'existant est compté -> toujours stoppé
+        let tl2 = TickLog::new(dir.to_str().unwrap(), 200).unwrap();
+        assert!(!tl2.log(1_793_016_000_123, 0, 1.0, 1.1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

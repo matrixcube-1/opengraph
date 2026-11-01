@@ -24,10 +24,29 @@ import numpy as np
 import optuna
 
 sys.path.insert(0, str(Path(__file__).parent))
-from poc_engine import Engine, DAYS, EPOCH
+from poc_engine import Engine, DAYS, EPOCH, FX, METAL_SYM
 
 OUT = Path("/opt/arb/poc")
 STORAGE = f"sqlite:///{OUT}/optuna.db"
+
+# --mixed : calibration sur l'univers FX + sauts métal (cand_mixed.npz,
+# study dédiée — ne contamine pas la study FX-only). Le moteur est restreint
+# aux symboles utilisés par les chemins (sync ne marche pas les indices CFD).
+MIXED = "--mixed" in sys.argv
+if MIXED:
+    sys.argv.remove("--mixed")
+CAND_FILE = OUT / ("cand_mixed.npz" if MIXED else "cand.npz")
+STUDY_NAME = "poc_exec_mixed" if MIXED else "poc_exec_v2"
+RAND_NAME = "poc_exec_rand_mixed" if MIXED else "poc_exec_rand_v2"
+BEST_OUT = OUT / ("best_params_mixed.json" if MIXED else "best_params.json")
+HOLDOUT_OUT = OUT / ("holdout_mixed.json" if MIXED else "holdout.json")
+
+
+def make_engine():
+    if MIXED:
+        syms = FX + [ms for cs in METAL_SYM.values() for ms in cs.values()]
+        return Engine(syms=syms, mixed=True)
+    return Engine()
 TRAIN_DAYS = DAYS[:2]           # 22, 23 oct. -> in-sample (2 steps de pruning)
 HOLDOUT_DAY = DAYS[2]           # 26 oct. -> évalué UNE fois
 SEED = 20261027
@@ -47,12 +66,12 @@ def day_of(t_ms):
 
 
 def load_cands():
-    z = np.load(OUT / "cand.npz")
+    z = np.load(CAND_FILE)
     cands = [tuple(c) for c in z["cands"]]
     # garantie bloquante : les candidats doivent etre chronologiques —
     # le « trie par construction » devient un echec, pas un avertissement
     ts = np.asarray([c[0] for c in cands])
-    assert np.all(np.diff(ts) >= 0), "cand.npz : timestamps non croissants"
+    assert np.all(np.diff(ts) >= 0), f"{CAND_FILE} : timestamps non croissants"
     eps = z["episodes"] if "episodes" in z.files else np.empty((0, 4))
     by_day = {d: [] for d in DAYS}
     for c in cands:
@@ -159,8 +178,8 @@ def main():
     t0 = time.time()
 
     if mode == "scan":
-        eng = Engine()
-        cands, eps = eng.scan(out=OUT / "cand.npz", **SCAN_GENEROUS)
+        eng = make_engine()
+        cands, eps = eng.scan(out=CAND_FILE, **SCAN_GENEROUS)
         print(f"scan {time.time()-t0:.0f}s -> {len(cands):,} candidats, {len(eps):,} épisodes")
         if len(eps):
             d = (np.array([e[1]-e[0] for e in eps])) / 1000.0
@@ -168,12 +187,12 @@ def main():
                   (np.median(d), np.quantile(d, 0.9), d.max()))
         return
 
-    eng = Engine()
+    eng = make_engine()
     cands_by_day, eps = load_cands()
     print({d: len(v) for d, v in cands_by_day.items()}, f"chargé en {time.time()-t0:.0f}s")
 
     if mode == "holdout":
-        study = optuna.load_study(study_name="poc_exec_v2", storage=STORAGE)
+        study = optuna.load_study(study_name=STUDY_NAME, storage=STORAGE)
         best = pick_best(study)
         if best is None:
             print("aucun trial complété"); return
@@ -181,13 +200,13 @@ def main():
         res = dict(best_params=best.params, in_sample=best.value,
                    feasible=all(v <= 0 for v in (best.constraints or {}).values()),
                    holdout_day=HOLDOUT_DAY, holdout=r)
-        (OUT / "holdout.json").write_text(json.dumps(res, indent=2))
+        HOLDOUT_OUT.write_text(json.dumps(res, indent=2))
         print(json.dumps(res, indent=2))
         return
 
     if mode == "importance":
         from optuna.importance import get_param_importances
-        study = optuna.load_study(study_name="poc_exec_v2", storage=STORAGE)
+        study = optuna.load_study(study_name=STUDY_NAME, storage=STORAGE)
         try:
             # PedAnova vise les FAIBLES valeurs -> maximize exige target=-value (doc §9)
             print(get_param_importances(study, target=lambda t: -t.value))
@@ -196,7 +215,7 @@ def main():
         return
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study = make_study("poc_exec_v2",
+    study = make_study(STUDY_NAME,
                        optuna.samplers.TPESampler(seed=SEED, multivariate=True,
                                                 constant_liar=True))
     if len(study.trials) == 0:
@@ -206,7 +225,7 @@ def main():
 
     # study de comparaison Random (checklist #5 — mesure le gain du sampler)
     if mode != "smoke":
-        rs = make_study("poc_exec_rand_v2", optuna.samplers.RandomSampler(seed=SEED))
+        rs = make_study(RAND_NAME, optuna.samplers.RandomSampler(seed=SEED))
         rs.optimize(objective_factory(eng, cands_by_day), n_trials=max(20, n // 4),
                     n_jobs=1)
 
@@ -217,7 +236,7 @@ def main():
                attrs={k: b.user_attrs.get(k) for k in ("trades", "aborts", "pnl_total")},
                constraints=b.constraints, n_trials=len(study.trials),
                elapsed=time.time() - t0)
-    (OUT / "best_params.json").write_text(json.dumps(res, indent=2))
+    BEST_OUT.write_text(json.dumps(res, indent=2))
     print(json.dumps(res, indent=2))
 
 

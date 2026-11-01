@@ -23,7 +23,8 @@ require_netted = true
 reconcile_s = 30
 
 # Paramètres moteur figés (P) — ne pas modifier sans recalibrage
-# calibration Optuna poc_exec_fxcur trial #87 (holdout 26/10 : +955 $, 168 trades, 0 abort)
+# calibration Optuna poc_exec_fxcur trial #87, Convention A exécutable
+# (holdout 26/10 : +61,58 $ / 12 trades / 0 abort ; 27/10 : +35,96 $ / 8 / 0)
 [engine]
 fresh_ms = 909.0
 spread_cap = 1.76

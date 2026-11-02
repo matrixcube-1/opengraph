@@ -268,3 +268,15 @@ seuils 5 % que B3. Test : `nan_and_crossed_lines_are_rejected`.
 - ticks_to_poc.py : EPOCH UTC (corrigé OG2-B4).
 
 Tests : 35/35 engine + 60/60 client verts ; release rebuild.
+
+## 2026-11-02 — passe préparation data (post-MC)
+
+- `ticks_to_poc.py` : robustesse lignes corrompues — JSON cassé, `e` hors
+  0..27 (bloque aussi `e<0`, fuite via indexation négative Python),
+  champs manquants, quotes croisées -> rejet comptabilisé, conversion
+  continue. Tests : `audit/test_ticks_to_poc.py` 4/4.
+- cBot `cs/OgDetect.cs` : message boot en InvariantCulture (locale FR
+  mettait `2,66`); Print `[OPP]` ajouté pour visibilité Automate.
+- `replay_journal.py` : rejoue le journal cBot dans le moteur Rust
+  (détection + exec_seq complet) — premier PoC sur données réelles IC.
+- Rapport : `MC/POC_IC_REEL_2026-11-02.md`.

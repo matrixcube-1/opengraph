@@ -101,7 +101,8 @@ public partial class OgDetect : Robot
         if (!SelfTest())
         { Print("[OgDetect] FATAL: self-test divergent"); Stop(); return; }
         Directory.CreateDirectory(JournalDir);
-        LogSys(string.Format("boot detect-only paths=2072 ddd={0} warm={1}", DddMin, WARMUP));
+        LogSys(string.Format(CultureInfo.InvariantCulture,
+            "boot detect-only paths=2072 ddd={0} warm={1}", DddMin, WARMUP));
         Print("[OgDetect] pret — detection seule, aucun ordre possible");
     }
 

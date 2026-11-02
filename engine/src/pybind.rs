@@ -208,8 +208,9 @@ impl PyEngine {
     ///   `filled_base/order_base` ; d=-1 : `filled_base*px_fill/acc` ;
     /// - `px_node` : taux nœud→nœud — `px_fill` si d=+1, `1/px_fill` si d=-1.
     ///
-    /// `aborted` → `pnl = -12*filled + cash - comm` (la jambe avortée ne
-    /// contribue rien — conservatisme identique à `exec_seq`).
+    /// `aborted` → `pnl = -abort_cost(legs, filled) + cash - comm` (la
+    /// jambe avortée ne contribue rien — conservatisme identique à
+    /// `exec_seq` ; coût par arête spread-sensible depuis l'audit OG2-D2).
     /// Retourne `(pnl_usd, filled_legs, partial_legs, resid_usd)` où
     /// `resid_usd` = position restante marquée à la liquidation EXÉCUTABLE
     /// (Convention A stricte) — position finale (`done`) ou résiduel

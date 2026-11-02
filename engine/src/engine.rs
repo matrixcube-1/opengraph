@@ -251,7 +251,17 @@ impl Engine {
     /// instant) ; le spread est poussé dans la médiane à **chaque** tick
     /// reçu — miroir exact du préchargé, où les deux entrées à ts égal
     /// existent toutes les deux dans la série.
+    ///
+    /// Quotes rejetées en entrée (audit live) : bid/ask non finis ou
+    /// croisés (`ask < bid`). Une quote croisée publierait un spread
+    /// négatif — `fx_ok` le laisserait passer (spread < cap x médian) et
+    /// eval calculerait un edge fantôme exécutable ; la médiane serait
+    /// corrompue en plus. Le client filtre en amont — défense en
+    /// profondeur ici : ni état publié ni poussée dans la médiane.
     pub fn ingest(&mut self, si: usize, q: Quote) {
+        if !(q.bid.is_finite() && q.ask.is_finite()) || q.ask < q.bid {
+            return;
+        }
         {
             let s = &mut self.data[si];
             if s.ts.last() == Some(&q.ts_ms) {
@@ -531,6 +541,47 @@ mod tests {
         // et le parcours tick() ne saute jamais dans le futur
         e.sync(1_000);
         assert!(e.last_t.iter().all(|&lt| lt <= 1_000));
+    }
+
+    /// Audit live : une quote croisée (ask < bid) ou non finie ne doit
+    /// NI publier un état exploitable (spread négatif = edge fantôme
+    /// qui passerait fx_ok) NI corrompre la médiane incrémentale.
+    /// Le client filtre déjà en amont — défense en profondeur du moteur.
+    #[test]
+    fn ingest_rejects_crossed_or_nonfinite_quotes() {
+        let mut e = Engine::live();
+        let si = e.sidx["EURUSD"];
+        e.ingest(
+            si,
+            Quote {
+                ts_ms: 1_000,
+                bid: 1.10,
+                ask: 1.102,
+                vol: 1.0,
+            },
+        );
+        // croisée : ask < bid — rejetée (ni publiée ni dans la médiane)
+        e.ingest(
+            si,
+            Quote {
+                ts_ms: 2_000,
+                bid: 1.105,
+                ask: 1.104,
+                vol: 1.0,
+            },
+        );
+        // NaN — rejetée pareil
+        e.ingest(
+            si,
+            Quote {
+                ts_ms: 3_000,
+                bid: f64::NAN,
+                ask: 1.20,
+                vol: 1.0,
+            },
+        );
+        assert_eq!(e.last_t[si], 1_000, "quote invalide publiée");
+        assert!((e.med[si] - 0.002).abs() < 1e-12, "médiane corrompue");
     }
 
     /// ingest : publie sans curseur, médiane incrémentale = médiane exacte,

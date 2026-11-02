@@ -77,6 +77,13 @@ pub fn load_symbol(root: &Path, sym: &'static str, days: &[&str]) -> Option<Symb
                     rejected += 1;
                     continue;
                 };
+                // "NaN".parse() réussit : les littéraux non finis et les
+                // quotes croisées comptent aussi comme lignes rejetées.
+                if !(a.is_finite() && b.is_finite() && av.is_finite() && bv.is_finite()) || a < b
+                {
+                    rejected += 1;
+                    continue;
+                }
                 s.ts.push(base + ms);
                 s.ask.push(a);
                 s.bid.push(b);
@@ -177,6 +184,26 @@ mod tests {
         csv.push_str("0,1.1001,1.0999,2.0,1.0\n"); // 10/11 rejetées -> panic
         std::fs::write(f.join("00.csv"), csv).unwrap();
         let _ = load_symbol(&dir, "EURUSD", &["2026-10-22"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// "NaN".parse() réussit en Rust : les littéraux non finis et les
+    /// quotes croisées (ask < bid) doivent aussi compter comme rejetées —
+    /// sinon ils corrompent la médiane et fabriquent des spreads négatifs.
+    #[test]
+    fn nan_and_crossed_lines_are_rejected() {
+        let dir = std::env::temp_dir().join("og_test_nan");
+        let f = dir.join("EURUSD").join("2026-10-22");
+        std::fs::create_dir_all(&f).unwrap();
+        let mut csv = String::from("ms_off,ask,bid,ask_vol,bid_vol\n");
+        for i in 0..19 {
+            csv.push_str(&format!("{i},1.1001,1.0999,2.0,1.0\n"));
+        }
+        csv.push_str("20,NaN,1.0999,2.0,1.0\n");  // littéral non fini
+        csv.push_str("21,1.0998,1.0999,2.0,1.0\n"); // croisée : ask < bid
+        std::fs::write(f.join("00.csv"), csv).unwrap();
+        let s = load_symbol(&dir, "EURUSD", &["2026-10-22"]).unwrap();
+        assert_eq!(s.len(), 19, "NaN/croisée chargées comme ticks valides");
         std::fs::remove_dir_all(&dir).ok();
     }
 

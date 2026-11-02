@@ -221,3 +221,50 @@ j23→j22 re-expose les vrais ticks · T5 eval nominale · T6 rejouabilité
 j22|j23|j22 sur même eng → identique.
 
 **Artefacts empoisonnés** : optuna.db (trials T1+) → archivé buggy_r2, non supprimé.
+
+---
+
+## Audit logique complet — 2e passe (nov. 2026, post-OG2)
+
+Relecture ligne à ligne de tout le moteur (engine/eval/exec/scan/data/pybind)
+et parité POC. Verdict : propre, sauf une classe — validation d'entrée.
+
+### A — ingest acceptait les quotes croisées/NaN (corrigé)
+
+`Engine::ingest` publiait et poussait dans la médiane toute quote, y
+compris `ask < bid` ou NaN. Une quote croisée produit un spread négatif →
+passe `fx_ok` (spread < cap x médian) → edge fantôme exécutable en eval.
+Le client filtre en amont mais le moteur n'avait pas de défense en
+profondeur. Garde ajoutée : `!finite || ask < bid` -> rejet silencieux
+(ni état ni médiane). Test : `ingest_rejects_crossed_or_nonfinite_quotes`.
+
+### B — data.rs : littéraux NaN + croisées non comptés rejetés (corrigé)
+
+`"NaN".parse::<f64>()` réussit en Rust : le correctif OG2-B3 ne comptait
+donc ni les NaN littéraux ni les quotes croisées des CSV comme lignes
+rejetées — elles étaient chargées comme ticks valides. Validation
+post-parse ajoutée : non fini ou `ask < bid` -> `rejected += 1`, mêmes
+seuils 5 % que B3. Test : `nan_and_crossed_lines_are_rejected`.
+
+### Doc
+
+- `ABORT_COST_PER_LEG_USD` : commentaire clarifié (repli médiane absente,
+  pas le modèle — le coût réel est par arête depuis OG2-D2).
+- pybind `exec_settle` : commentaire `-12*filled` obsolète remplacé par
+  `abort_cost(legs, filled)`.
+
+### Vérifié propre (sans changement)
+
+- eval.rs : direction bid/1-ask, comm `COMM/up[base]` = modèle
+  per-100k-base-ccy (~2.31-5.00 $/jambe), argmax strict = np.argmax,
+  Convention A `up_liq`, NaN rattrapés par le check final.
+- exec.rs : ordre des portes E1-E9 identique au POC (q_send à t, q_now à
+  t_f, kill IOC >3t, frac {1, 0.6}, vol_guard côté atteint, liquidation
+  partielle exécutable, `t = t_f` séquentiel).
+- scan.rs : re-détection sous params du trial, verrou `t_free`,
+  cooldown s->ms correct, épisode non fermé sur eval None (parité POC).
+- poc_engine.py : parité ligne à ligne confirmée (eval vectorisée,
+  _advance/tick/sync, usd_price/_usd_liq, exec_seq, _abort par arête).
+- ticks_to_poc.py : EPOCH UTC (corrigé OG2-B4).
+
+Tests : 35/35 engine + 60/60 client verts ; release rebuild.

@@ -206,3 +206,23 @@ Divergences déclarées vs le moteur Rust (télémétrie, pas trading) :
 fraîcheur par détection de changement bid/ask (pas de ts venue par symbole en
 Automate) ; médiane de spread fenêtrée 512 ticks vs historique complet ;
 évaluation à chaque tick du symbole hôte (poll des 28) ; aucune exécution.
+
+### Compilation et lancement via ctrader-cli (deja fait sur ce poste)
+
+Le cBot a ete scaffold + compile avec la CLI cTrader embarquee
+(`%LOCALAPPDATA%\Spotware\cTrader\<hash>\ctrader-cli.exe`) :
+
+```
+ctrader-cli.exe create cbot OgDetect csharp          # projet cAlgo
+# -> remplacer OgDetect.cs + config.json par ctrader_client/cs/*
+ctrader-cli.exe build <projet.csproj>               # -> OgDetect.algo (0 erreur)
+ctrader-cli.exe run "...\Robots\OgDetect.algo" \
+    --ctid=<votre-cTID> --pwd-file=<fichier-mdp> --account=<demo> \
+    --symbol=EURUSD --period=m1 --full-access
+```
+
+Le `run` requiert le cTID + mot de passe cTrader (fichier hors git, jamais en
+ligne de commande visible) — c'est la seule etape manuelle restante. Le bot
+apparait aussi dans cTrader Desktop -> Automate -> OgDetect -> Play sur EURUSD.
+Self-test de parite valide contre le moteur Rust (meme fixture eval.rs :
+coherent net<0, distorsion CADJPY -> 1 jambe JPY->CAD, net>0).

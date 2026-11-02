@@ -1,0 +1,31 @@
+{
+  "AccessRights": "FullAccess",
+  "AddIndicators": true,
+  "Parameters": [
+    {
+      "Name": "JournalDir",
+      "DefaultValue": "C:\\arb_cs_journal",
+      "Type": "String"
+    },
+    {
+      "Name": "FreshMs",
+      "DefaultValue": 909.0,
+      "Type": "Double"
+    },
+    {
+      "Name": "SpreadCap",
+      "DefaultValue": 1.76,
+      "Type": "Double"
+    },
+    {
+      "Name": "CommScale",
+      "DefaultValue": 1.10,
+      "Type": "Double"
+    },
+    {
+      "Name": "DddMin",
+      "DefaultValue": 2.66,
+      "Type": "Double"
+    }
+  ]
+}

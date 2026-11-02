@@ -68,24 +68,31 @@ distribution en régime actif, diversité des clusters, taille des edges.
 La mesure définitive de l'exécutabilité reste le client Rust au débit
 natif des ticks (10-50/s/symbole) — en attente de l'approbation Spotware.
 
-## Addendum — scénario broker ECN $2 A/R + colocation ~1 ms
+## Addendum — scénario broker ECN $2 A/R + colocation ~1 ms (A/B propre)
 
-Re-simulation du meme corpus (journal du 02/11) avec commission reduite
-a $1/cote/100k (comm_scale 0.3667) — detection seule, exec_seq chargeant
-toujours 3$ en interne (borne conservative) :
+A/B re-simule sur le meme corpus (journal du 02/11, 71 210 ticks/1,67 h)
+avec `Engine::comm_per_side` — le moteur applique desormais **le meme
+taux** a l'eval, aux fills exec_seq ET a la commission de liquidation
+(comptabilite coherente par construction, plus de correction post-hoc) :
 
-| Metrique | $3/cote (IC) | **$1/cote (ECN negocie)** |
+| Metrique | $3/cote (IC) | **$1/cote (ECN negocie, 2$ A/R)** |
 |---|---|---|
-| Episodes detectes | ~800/h | **~3 900 en ~90 min (~2 600/h)** |
-| Net detecte moyen | +4.12$ | **+7.2$** |
-| PnL exec corrige* | +4.27$ | **~+7-8$** |
-| Resolutions | 100% done | 100% done |
+| Episodes detectes | 1 794 (1 074/h) | **5 862 (3 505/h) — x3,3** |
+| Net detecte moyen | +4.53 $ | **+7.64 $** |
+| PnL exec realise (n=400) | +4.33 $ | **+7.30 $ — +69%** |
+| p50 / min / max | +4.47 / -4.04 / +9.94 | +7.90 / -4.25 / +12.58 |
+| Survie detecte->realise | 95 % | **96 %** |
+| Resolutions | 100 % done | 100 % done |
 
-*correction arithmetique du delta de commission par jambe + liquidation
-(~+2.2/unite) — exec_seq ne prend pas comm_scale en parametre.
-A ~1 ms de distance les fills precedant le repricing (episodes p90 747 ms)
-deviennent quasi-certains : la borne optimiste MC devient realiste.
+Chemins 3 jambes presents a $1/cote (ex. EURCAD->EURCHF->CHFJPY +9.52 $
+realise) — le seuil plus bas les rend rentables apres 3 commissions.
+A ~1 ms de distance colocalisee, les fills precedant le repricing
+(episodes p90 747 ms, max 3,2 s) deviennent quasi-certains : la borne
+optimiste MC devient realiste. Caveat inchange : granularite du poll
+cBot ~1-2 Hz — la mesure definitive reste le feed natif.
 
-**Questions a clarifier avec le broker** : protocole de l'API (FIX 4.4 ?
-proprietaire ? REST+WS ?), couverture des 28 paires Annexe J, mode
-netting des positions, environnement demo/pret a date.
+**Venue confirmee** (02/11 soir) : FIX 4.4, les 28 paires Annexe J +
+XAUUSD/XAGUSD, compte NETTING configurable, UAT demo disponible.
+Adaptateur `fix_client/` demarre : codec tag=value/CheckSum + session
+logon/seqnum/heartbeat + market data V/W/X top-of-book (18/18 tests).
+Reste : transport TLS, ordres IOC + ExecutionReport sur spec venue.

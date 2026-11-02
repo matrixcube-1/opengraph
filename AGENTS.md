@@ -146,6 +146,23 @@
 - Cadrage : uniquement ce qu'IC Markets considère acceptable (univers Annexe J,
   PDS S1-S4, pas de CME dans l'implémentation IC).
 
+## Nouveau broker ECN négocié (utilisateur, 02/11/2026) — chemin prioritaire
+- **Commission 2 $ A/R/100 K** (1 $/côté) — vs 3 $/côté IC : économie ~×2
+  et épisodes détectés ×3,3 sur le même corpus (A/B dans
+  `MC/POC_IC_REEL_2026-11-02.md` — comptabilité cohérente via
+  `Engine::comm_per_side`, défaut 3,00).
+- **API : FIX 4.4** — adaptateur `fix_client/` en cours : codec + session
+  + market data V/W/X top-of-book faits (18 tests) ; reste transport TLS,
+  ordres IOC + ExecutionReport (attente spec venue + creds UAT).
+- **Couverture : les 28 FX + XAUUSD/XAGUSD** (métaux = upside POC plus tard,
+  production reste FX-only).
+- **NETTING configurable** — exigé, à verrouiller côté compte.
+- **UAT demo disponible.**
+- **Colocation Linux** : ~1 µs serveur, ~1 ms distance annoncée, 10 Gbps —
+  chiffres à mesurer en réel, pas à calibrer dessus.
+- Dépendances encore externes : doc FIX venue (dictionnaire tags, types
+  d'ordres supportés, modèle MD), credentials UAT (jamais dans le chat/git).
+
 ## Vérification
 - `python test_pipeline.py <dossier_src>` sur le serveur (13 vérifications attendues).
 - `python test_r7.py` sur le serveur : T1-T6 — quote future, rembobinage pos,

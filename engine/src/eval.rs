@@ -18,7 +18,7 @@
 //! `np.argmax`.
 
 use crate::engine::Engine;
-use crate::fees::{COMM_PER_SIDE_USD, NOTIONAL_USD};
+use crate::fees::NOTIONAL_USD;
 use crate::paths::PathTables;
 
 /// Résultat d'évaluation : meilleur net, indice de chemin, DDD brut.
@@ -76,7 +76,7 @@ impl Engine {
                 }
                 let ub = up[pt.p_base[pi][li] as usize];
                 comm += if ub > 0.0 && ub.is_finite() {
-                    COMM_PER_SIDE_USD / ub
+                    self.comm_per_side / ub
                 } else {
                     f64::NAN
                 };
@@ -202,7 +202,8 @@ mod tests {
         let ask = mid_cadjpy * 1.0001;
         let qty0 = 100_000.0 / ups[3];
         let usd_out = qty0 * (1.0 / ask) / (1.35 * 1.0001);
-        let comm = COMM_PER_SIDE_USD / ups[5] + COMM_PER_SIDE_USD;
+        let comm = crate::fees::COMM_PER_SIDE_USD / ups[5]
+            + crate::fees::COMM_PER_SIDE_USD;
         let expected = usd_out - 100_000.0 - comm;
         assert!((r.net_usd - expected).abs() < 1e-6);
         assert!(r.net_usd > 0.0);

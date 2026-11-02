@@ -131,6 +131,11 @@ pub struct Engine {
     med_acc: Vec<SpreadMedian>,
     /// Événements FX triés `(ts, si)` pour le scan événementiel.
     pub ev: Vec<(i64, usize)>,
+    /// Commission par côté et par 100 000 USD de notionnel base.
+    /// Défaut `COMM_PER_SIDE_USD` (3,00 — IC historique) ; ECN 2 $ A/R
+    /// → 1,00. Un seul paramètre lu par éval, exécution ET liquidation —
+    /// cohérence comptable garantie par construction.
+    pub comm_per_side: f64,
 }
 
 impl Engine {
@@ -216,6 +221,7 @@ impl Engine {
             fx_si,
             up_pair,
             ev,
+            comm_per_side: COMM_PER_SIDE_USD,
         }
     }
 
@@ -403,9 +409,9 @@ impl Engine {
                 continue;
             }
             c[i] = if direct {
-                COMM_PER_SIDE_USD / (0.5 * (self.bid[si] + self.ask[si]))
+                self.comm_per_side / (0.5 * (self.bid[si] + self.ask[si]))
             } else {
-                COMM_PER_SIDE_USD
+                self.comm_per_side
             };
         }
         c

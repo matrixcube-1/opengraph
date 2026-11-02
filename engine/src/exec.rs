@@ -31,7 +31,7 @@
 //! Effet quasi nul à 100 K$ sur FX (~1-3 M affichés) mais testé.
 
 use crate::engine::Engine;
-use crate::fees::{ABORT_COST_PER_LEG_USD, COMM_PER_SIDE_USD, NOTIONAL_USD};
+use crate::fees::{ABORT_COST_PER_LEG_USD, NOTIONAL_USD};
 use crate::paths::PathTables;
 
 /// Paramètres d'une séquence d'exécution.
@@ -120,9 +120,9 @@ impl Engine {
             let c = if comm_liq[node].is_finite() {
                 comm_liq[node]
             } else if up[node].is_finite() && up[node] > 0.0 {
-                COMM_PER_SIDE_USD / up[node]
+                self.comm_per_side / up[node]
             } else {
-                COMM_PER_SIDE_USD
+                self.comm_per_side
             };
             (r, c)
         };
@@ -212,9 +212,9 @@ impl Engine {
             }
             qty *= q_now;
             comm += if up[a as usize].is_finite() {
-                COMM_PER_SIDE_USD / up[a as usize]
+                self.comm_per_side / up[a as usize]
             } else {
-                COMM_PER_SIDE_USD
+                self.comm_per_side
             };
             filled += 1;
             node = if node == a as usize {
@@ -283,7 +283,7 @@ impl Engine {
                 let mid = (self.bid[si] + self.ask[si]) * 0.5;
                 let med = self.med[si];
                 if med.is_finite() && mid.is_finite() && mid > 0.0 {
-                    med / mid * NOTIONAL_USD + COMM_PER_SIDE_USD
+                    med / mid * NOTIONAL_USD + self.comm_per_side
                 } else {
                     ABORT_COST_PER_LEG_USD
                 }
@@ -324,9 +324,9 @@ impl Engine {
             let c = if comm_liq[node].is_finite() {
                 comm_liq[node]
             } else if up[node].is_finite() && up[node] > 0.0 {
-                COMM_PER_SIDE_USD / up[node]
+                self.comm_per_side / up[node]
             } else {
-                COMM_PER_SIDE_USD
+                self.comm_per_side
             };
             (r, c)
         };
@@ -352,9 +352,9 @@ impl Engine {
             }
             qty *= px;
             comm += if up[a as usize].is_finite() {
-                COMM_PER_SIDE_USD / up[a as usize]
+                self.comm_per_side / up[a as usize]
             } else {
-                COMM_PER_SIDE_USD
+                self.comm_per_side
             };
             filled += 1;
             node = if node == a as usize {
@@ -476,7 +476,8 @@ mod tests {
         let qty = 100_000.0 / ups[3] / ask;
         let usdcad_ask = 1.35 * 1.0001;
         let expected = qty / usdcad_ask - 100_000.0
-            - COMM_PER_SIDE_USD / ups[5] - COMM_PER_SIDE_USD;
+            - crate::fees::COMM_PER_SIDE_USD / ups[5]
+            - crate::fees::COMM_PER_SIDE_USD;
         assert!((pnl_usd - expected).abs() < 1e-6);
         assert_eq!(dur_ms, 2.5);
         assert_eq!(filled_legs, 1);

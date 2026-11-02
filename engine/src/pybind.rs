@@ -62,6 +62,16 @@ impl PyEngine {
         self.pt.len()
     }
 
+    /// Commission par côté / 100 k USD — défaut 3,00 (IC historique) ;
+    /// ECN 2 $ A/R → 1,00. Un seul paramètre : eval, exec ET liquidation
+    /// lisent la même valeur (cohérence comptable garantie).
+    fn set_comm_per_side(&mut self, usd: f64) {
+        self.eng.comm_per_side = usd;
+    }
+    fn comm_per_side(&self) -> f64 {
+        self.eng.comm_per_side
+    }
+
     /// Symboles des jambes du chemin `pi`, ex. `["AUDCAD", "CADJPY"]`.
     fn legs(&self, pi: usize) -> Vec<String> {
         self.pt.paths[pi]

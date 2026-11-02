@@ -50,14 +50,21 @@ def main():
     ap.add_argument("journal")
     ap.add_argument("--lat", type=float, default=2.5, help="latence jambe ms")
     ap.add_argument("--tau", type=float, default=0.69, help="tau_slip bp")
+    ap.add_argument("--comm", type=float, default=3.00,
+                    help="commission par cote/100k USD — 3.00 IC "
+                         "historique, 1.00 ECN 2$ A/R. Appliquee "
+                         "identiquement a eval, exec_seq ET liquidation "
+                         "(set_comm_per_side).")
     ap.add_argument("--scale", type=float, default=SCALE,
-                    help="comm_scale (0.3667 ~= 1$/cote/100k, 1.10 ~= 3$)")
+                    help="marge de securite sur commissions a la "
+                         "detection (1.10 = +10%)")
     ap.add_argument("--max-exec", type=int, default=500)
     args = ap.parse_args()
 
     # Phase A : charge le livre complet + detection par tick (on_tick
     # renvoie l'eval du tick — meme semantique que le scan live).
     eng = og.Engine.live()
+    eng.set_comm_per_side(args.comm)   # meme taux partout : eval+exec+liq
     opps, n_ticks, t0, last_t = [], 0, None, 0
     for e, t, bid, ask in iter_ticks(args.journal):
         if t0 is None:

@@ -19,6 +19,7 @@ import json
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -43,9 +44,9 @@ def convert(ticks_dir, out_dir):
                 continue
             sym = pe.FX[ev["e"]]
             t = int(ev["ts"])
-            # bucketing UTC : la formule EPOCH du POC (mktime - timezone)
-            # vaut le minuit UTC de la date, quel que soit le fuseau de
-            # la machine — jour + heure doivent donc etre UTC.
+            # bucketing UTC : EPOCH du POC = minuit UTC de la date —
+            # jour + heure doivent etre UTC (audit OG2-B4 : ne PAS
+            # réutiliser mktime-timezone, cassé par le DST).
             lt = time.gmtime(t / 1000)
             day = time.strftime("%Y-%m-%d", lt)
             buckets[(sym, day, lt.tm_hour)].append((t, ev["ask"], ev["bid"]))
@@ -53,11 +54,11 @@ def convert(ticks_dir, out_dir):
     files = 0
     for (sym, day, h), rows in sorted(buckets.items()):
         rows.sort()
-        t0 = int(time.mktime(time.strptime(day, "%Y-%m-%d")) * 1000) - time.timezone * 1000
+        # t0 du CSV = epoch UTC exact du jour (même formule que pe.EPOCH)
+        t0_utc = int(datetime.strptime(day, "%Y-%m-%d")
+                     .replace(tzinfo=timezone.utc).timestamp() * 1000)
         d = out / sym / day
         d.mkdir(parents=True, exist_ok=True)
-        # t0 du CSV = epoch UTC du jour — mktime+timezone reproduit EPOCH du POC
-        t0_utc = t0
         with open(d / f"{h:02d}.csv", "w", newline="") as fh:
             fh.write(HDR)
             w = csv.writer(fh)
@@ -71,8 +72,9 @@ def scan(out_dir, days):
     """Charge les CSV live via les constantes patchees -> scan -> npz."""
     pe.DATA = Path(out_dir)
     pe.DAYS = list(days)
-    pe.EPOCH = {d: int(time.mktime(time.strptime(d, "%Y-%m-%d")) * 1000)
-                - time.timezone * 1000 for d in pe.DAYS}
+    pe.EPOCH = {d: int(datetime.strptime(d, "%Y-%m-%d")
+                     .replace(tzinfo=timezone.utc).timestamp() * 1000)
+                for d in pe.DAYS}
     pe.MED_CUTOFF = pe.EPOCH[pe.DAYS[-1]]      # mediane in-sample seule
     eng = pe.Engine(syms=pe.FX, mixed=False)
     cands, eps = eng.scan(out=None)

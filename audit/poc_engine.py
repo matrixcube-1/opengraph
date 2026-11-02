@@ -19,13 +19,17 @@ import csv
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
 DATA = Path("/opt/arb/data")
 DAYS = ["2026-10-22", "2026-10-23", "2026-10-26"]
-EPOCH = {d: int(time.mktime(time.strptime(d, "%Y-%m-%d")) * 1000) - time.timezone * 1000 for d in DAYS}
+# audit OG2-B4 : minuit UTC exact — mktime-timezone appliquait le fuseau
+# DST courant mais corrigeait de l'offset non-DST (jours CEST décalés d'1 h).
+EPOCH = {d: int(datetime.strptime(d, "%Y-%m-%d")
+              .replace(tzinfo=timezone.utc).timestamp() * 1000) for d in DAYS}
 # médiane de spread : in-sample UNIQUEMENT (jamais le holdout) — sinon fuite
 # d'information future dans le cap spread_cap x MED.
 MED_CUTOFF = EPOCH[DAYS[-1]]
@@ -404,7 +408,7 @@ class Engine:
                 bi = self.P_BOUT[pi]; sym = self.slist[bi]
                 jt, bid_f, ask_f, j = self.quote_at(sym, t_f)
                 if j < 0 or t_f - jt > 500:
-                    return self._abort("bout stale", filled, cash, comm, t - t0, parts)
+                    return self._abort("bout stale", legs, filled, cash, comm, t - t0, parts)
                 comm += self.P_CB[pi]
                 r, c = liq(node)
                 usd_end = qty * (bid_f / ask_f) * r          # node = devise IC du bout
@@ -427,14 +431,14 @@ class Engine:
                 q_send = 1.0 / as0
                 jt, bid1, ask1, j1 = self.quote_at(s1, t_f)
                 if j1 < 0 or not np.isfinite(q_send) or q_send <= 0:
-                    return self._abort("no quote", filled, cash, comm, t - t0, parts)
+                    return self._abort("no quote", legs, filled, cash, comm, t - t0, parts)
                 q_now = 1.0 / ask1
                 move = abs(q_now / q_send - 1.0)
                 if move > 3 * slip:
-                    return self._abort("kill IOC", filled, cash, comm, t - t0, parts)
+                    return self._abort("kill IOC", legs, filled, cash, comm, t - t0, parts)
                 frac = 1.0 if move <= slip else 0.6
                 if frac < q_min:
-                    return self._abort("q<q_min", filled, cash, comm, t - t0, parts)
+                    return self._abort("q<q_min", legs, filled, cash, comm, t - t0, parts)
                 if frac < 1.0:
                     r, c = liq(node)
                     cash += qty * (1 - frac) * r
@@ -457,16 +461,16 @@ class Engine:
                     return qty_m * (bid1_now if jl >= 0 else bid1) * r
                 if j2 < 0 or not np.isfinite(q_send2) or q_send2 <= 0:
                     cash += liq_metal()
-                    return self._abort("no quote m2", filled, cash, comm, t_f2 - t0, parts)
+                    return self._abort("no quote m2", legs, filled, cash, comm, t_f2 - t0, parts)
                 q_now2 = bid2
                 move2 = abs(q_now2 / q_send2 - 1.0)
                 if move2 > 3 * slip:
                     cash += liq_metal()
-                    return self._abort("kill IOC m2", filled, cash, comm, t_f2 - t0, parts)
+                    return self._abort("kill IOC m2", legs, filled, cash, comm, t_f2 - t0, parts)
                 frac2 = 1.0 if move2 <= slip else 0.6
                 if frac2 < q_min:
                     cash += liq_metal()
-                    return self._abort("q<q_min m2", filled, cash, comm, t_f2 - t0, parts)
+                    return self._abort("q<q_min m2", legs, filled, cash, comm, t_f2 - t0, parts)
                 if frac2 < 1.0:
                     # métal invendu -> liquidation Convention A à la quote
                     # fraîche de la dénomination de départ
@@ -484,15 +488,15 @@ class Engine:
             q_send = bs0 if d == +1 else 1.0 / as0
             jt, bid_f, ask_f, j = self.quote_at(s, t_f)
             if j < 0 or not np.isfinite(q_send) or q_send <= 0:
-                return self._abort("no quote", filled, cash, comm, t - t0, parts)
+                return self._abort("no quote", legs, filled, cash, comm, t - t0, parts)
             q_now = bid_f if d == +1 else 1.0 / ask_f
             move = abs(q_now / q_send - 1.0)
             slip = tau_slip_bp * 1e-4
             if move > 3 * slip:
-                return self._abort("kill IOC", filled, cash, comm, t - t0, parts)
+                return self._abort("kill IOC", legs, filled, cash, comm, t - t0, parts)
             frac = 1.0 if move <= slip else 0.6
             if frac < q_min:
-                return self._abort("q<q_min", filled, cash, comm, t - t0, parts)
+                return self._abort("q<q_min", legs, filled, cash, comm, t - t0, parts)
             if frac < 1.0:
                 r, c = liq(node)
                 cash += qty * (1 - frac) * r
@@ -510,8 +514,24 @@ class Engine:
         return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm, why="",
                     fills=filled, dur=t - t0, parts=parts)
 
-    def _abort(self, why, filled, cash, comm, dur, parts=0):
-        c = 12.0 * filled   # ~aller-retour demi-spread + comm par jambe remplie
+    def _abort(self, why, legs, filled, cash, comm, dur, parts=0):
+        # audit OG2-D2 : débouclage par jambe = spread médian relatif x
+        # notional + comm de l'ordre d'unwind — le 12 $ fixe sous-estimait
+        # ~2x le coût sur les paires larges (NZDJPY ~2 bp -> ~23 $).
+        # La comm des fills est déjà dans `comm` ; on ajoute celle de
+        # l'ordre d'unwind. Repli constante si mid/med absents ou jambe
+        # métal (tuple — son résiduel est liquidé par liq_metal).
+        c = 0.0
+        for ei in legs[:filled]:
+            sj = (self.sidx.get(FX[ei])
+                  if isinstance(ei, (int, np.integer)) and 0 <= ei < len(FX)
+                  else None)
+            mid = (0.5 * (self.bid[sj] + self.ask[sj])
+                   if sj is not None else np.nan)
+            m = self.MED[sj] if sj is not None else np.nan
+            c += (m / mid * NOTIONAL + COMM
+                  if np.isfinite(mid) and mid > 0 and np.isfinite(m)
+                  else 12.0)
         return dict(res="abort", why=why, pnl=-c + cash - comm, fills=filled,
                     dur=dur, parts=parts)
 

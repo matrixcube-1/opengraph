@@ -78,6 +78,9 @@ pub struct SpreadMedian {
 }
 impl SpreadMedian {
     fn push(&mut self, x: f64) {
+        if !x.is_finite() {
+            return; // audit OG2-D1 : NaN/inf corrompraient la médiane
+        }
         if self.lo.peek().is_none_or(|m| x <= m.0) {
             self.lo.push(OrdF64(x));
         } else {
@@ -576,6 +579,22 @@ mod tests {
         assert_eq!(e.ask[si], 1.10);
         assert_eq!(e.data[si].len(), 3);
         assert!((e.med[si] - 0.0025).abs() < 1e-12);
+    }
+
+    /// Audit OG2-D1 : un spread NaN/infini ne doit JAMAIS entrer dans la
+    /// médiane — OrdF64 traiterait NaN comme égal à tout : il finit dans le
+    /// tas `hi` et déplace les vraies valeurs vers `lo` (médiane silencieuse
+    /// fausse mais finie -> spread_cap incohérent).
+    #[test]
+    fn spread_median_ignores_non_finite() {
+        let mut m = SpreadMedian::default();
+        for x in [0.001, 0.003, f64::NAN, f64::NAN, 0.002] {
+            m.push(x);
+        }
+        // sans filtre : les NaN occupent `hi`, 0.003 est repoussé en tête de
+        // `lo` -> médiane 0.003 au lieu de 0.002
+        assert!((m.median() - 0.002).abs() < 1e-15);
+        assert!(m.median().is_finite());
     }
 
     /// usd_price : mid direct (EURUSD) et inverse (USDJPY), ok mask respecté.

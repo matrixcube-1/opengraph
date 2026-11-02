@@ -54,11 +54,17 @@ pub fn load_symbol(root: &Path, sym: &'static str, days: &[&str]) -> Option<Symb
                 continue; // heure absente = trou de couverture, jamais fabriqué
             };
             let base = t0 + h * 3_600_000;
+            // audit OG2-B3 : lignes malformées comptées — avertissement
+            // systématique, fail-fast au-delà de 5 % (corruption réelle).
+            let mut total = 0usize;
+            let mut rejected = 0usize;
             for line in content.lines().skip(1) {
+                total += 1;
                 let mut it = line.split(',');
                 let (Some(ms), Some(a), Some(b), Some(av), Some(bv)) =
                     (it.next(), it.next(), it.next(), it.next(), it.next())
                 else {
+                    rejected += 1;
                     continue;
                 };
                 let (Ok(ms), Ok(a), Ok(b), Ok(av), Ok(bv)) = (
@@ -68,6 +74,7 @@ pub fn load_symbol(root: &Path, sym: &'static str, days: &[&str]) -> Option<Symb
                     av.parse::<f64>(),
                     bv.parse::<f64>(),
                 ) else {
+                    rejected += 1;
                     continue;
                 };
                 s.ts.push(base + ms);
@@ -75,6 +82,14 @@ pub fn load_symbol(root: &Path, sym: &'static str, days: &[&str]) -> Option<Symb
                 s.bid.push(b);
                 s.avol.push(av);
                 s.bvol.push(bv);
+            }
+            if rejected > 0 {
+                eprintln!("[data] {f:?} : {rejected}/{total} lignes rejetées (malformées)");
+                if rejected >= 5 && rejected * 20 > total {
+                    panic!(
+                        "fichier corrompu {f:?} : {rejected}/{total} lignes rejetées"
+                    );
+                }
             }
         }
     }
@@ -144,6 +159,41 @@ mod tests {
         assert_eq!(s.avol[1], 0.5);
         assert_eq!(s.bvol[1], 3.0);
         assert_eq!(s.ask[2], 1.1010);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Audit OG2-B3 : >5 % de lignes malformées (et >=5) = corruption ->
+    /// fail-fast, jamais un trou de couverture silencieux.
+    #[test]
+    #[should_panic(expected = "lignes rejetées")]
+    fn corrupt_csv_fails_fast_over_threshold() {
+        let dir = std::env::temp_dir().join("og_test_corrupt");
+        let f = dir.join("EURUSD").join("2026-10-22");
+        std::fs::create_dir_all(&f).unwrap();
+        let mut csv = String::from("ms_off,ask,bid,ask_vol,bid_vol\n");
+        for i in 0..10 {
+            csv.push_str(&format!("bad{i},x,y,z,w\n"));
+        }
+        csv.push_str("0,1.1001,1.0999,2.0,1.0\n"); // 10/11 rejetées -> panic
+        std::fs::write(f.join("00.csv"), csv).unwrap();
+        let _ = load_symbol(&dir, "EURUSD", &["2026-10-22"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// <5 % de lignes malformées : skip + avertissement, pas fatal.
+    #[test]
+    fn few_malformed_lines_skipped_not_fatal() {
+        let dir = std::env::temp_dir().join("og_test_warn");
+        let f = dir.join("EURUSD").join("2026-10-22");
+        std::fs::create_dir_all(&f).unwrap();
+        let mut csv = String::from("ms_off,ask,bid,ask_vol,bid_vol\n");
+        for i in 0..20 {
+            csv.push_str(&format!("{i},1.1001,1.0999,2.0,1.0\n"));
+        }
+        csv.push_str("ligne tronquee\n"); // 1/21 < 5 % -> tolérée
+        std::fs::write(f.join("00.csv"), csv).unwrap();
+        let s = load_symbol(&dir, "EURUSD", &["2026-10-22"]).unwrap();
+        assert_eq!(s.len(), 20);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

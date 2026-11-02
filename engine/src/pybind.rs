@@ -113,7 +113,8 @@ impl PyEngine {
         let eng = &mut self.eng;
         let pt = &self.pt;
         py.detach(move || {
-            let si = eng.fx_si[e]?;
+            // audit OG2-B1 : e >= 28 -> None, pas de panic hors borne.
+            let si = eng.fx_si.get(e).copied().flatten()?;
             eng.ingest(
                 si,
                 Quote {

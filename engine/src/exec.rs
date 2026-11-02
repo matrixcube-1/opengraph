@@ -18,7 +18,9 @@
 //! ```
 //!
 //! Fin : `pnl = qty x up[node] + cash - NOTIONAL - comm`.
-//! Abort : `pnl = -12 x filled + cash - comm` (proxy de débouclage).
+//! Abort : `pnl = -abort_cost + cash - comm` où abort_cost = somme par
+//! jambe remplie de `med_rel x notional + comm` (débouclage IOC croisant
+//! le spread médian — audit OG2-D2).
 //!
 //! ## Garde volume top-of-book (ajout spécifié vs POC)
 //!
@@ -141,7 +143,7 @@ impl Engine {
             ($why:expr) => {
                 return Some(ExecOutcome::Abort {
                     reason: $why,
-                    pnl_usd: -(ABORT_COST_PER_LEG_USD * filled as f64) + cash - comm,
+                    pnl_usd: -(self.abort_cost(legs, filled)) + cash - comm,
                     filled_legs: filled,
                     partial_legs: parts,
                     dur_ms: t - t0 as f64,
@@ -152,6 +154,12 @@ impl Engine {
         for &e in legs {
             let si = self.fx_si[e as usize].expect("filtré ci-dessus");
             let (a, b) = Self::edge_nodes(e);
+            // audit OG2-B2 : invariant figé par l'assert de build_tables —
+            // un nœud hors arête ne doit JAMAIS tomber dans le else -1.
+            debug_assert!(
+                node == a as usize || node == b as usize,
+                "nœud {node} hors arête ({a},{b})"
+            );
             let d: i8 = if node == a as usize { 1 } else { -1 };
             let t_f = t + ep.lat_ms;
 
@@ -254,11 +262,35 @@ impl Engine {
     /// - `px_node` = taux nœud→nœud (`px_fill` si d=+1, `1/px_fill` si d=-1).
     ///
     /// `aborted` : la séquence s'est arrêtée avant la dernière jambe
-    /// (kill IOC / q<q_min / no quote) → `pnl = -12*filled + cash - comm`,
+    /// (kill IOC / q<q_min / no quote) → `pnl = -abort_cost + cash - comm`,
     /// la jambe avortée ne contribue rien (conservatisme POC, identique à
     /// `exec_seq` : ni comm ni produit de la jambe fautive).
     ///
     /// Retourne `(pnl_usd, filled_legs, partial_legs, resid_usd)` où
+    /// Coût de débouclage des jambes remplies — audit OG2-D2 : le proxy
+    /// fixe 12 $/jambe sous-estimait ~2× le coût réel sur les paires à
+    /// spread large (NZDJPY ~2 bp → ~23 $). Pour chaque jambe remplie,
+    /// l'unwind IOC croise le spread médian de l'arête et paie une
+    /// commission : `med_rel x NOTIONAL + COMM`. Repli sur la constante
+    /// quand le mid ou la médiane manquent (jambe métal du POC, warm-up).
+    fn abort_cost(&self, legs: &[u8], filled: u8) -> f64 {
+        legs.iter()
+            .take(filled as usize)
+            .map(|&e| {
+                let Some(si) = self.fx_si[e as usize] else {
+                    return ABORT_COST_PER_LEG_USD;
+                };
+                let mid = (self.bid[si] + self.ask[si]) * 0.5;
+                let med = self.med[si];
+                if med.is_finite() && mid.is_finite() && mid > 0.0 {
+                    med / mid * NOTIONAL_USD + COMM_PER_SIDE_USD
+                } else {
+                    ABORT_COST_PER_LEG_USD
+                }
+            })
+            .sum()
+    }
+
     /// `resid_usd` = valeur de la position restante marquée à la liquidation
     /// EXÉCUTABLE (Convention A stricte) sur l'état COURANT — jamais de
     /// `sync(t0)` en live (audit C3 : rembobiner publiait des prix périmés).
@@ -272,6 +304,10 @@ impl Engine {
         pt: &PathTables,
     ) -> Option<(f64, u8, u8, f64)> {
         let legs = &pt.paths[pi];
+        // audit OG2-B5 : plus de fills que de jambes -> legs[li] hors borne.
+        if fills.len() > legs.len() {
+            return None;
+        }
         for &e in legs {
             self.fx_si[e as usize]?;
         }
@@ -338,7 +374,7 @@ impl Engine {
             0.0
         };
         let pnl = if aborted {
-            -(ABORT_COST_PER_LEG_USD * filled as f64) + cash - comm
+            -(self.abort_cost(legs, filled)) + cash - comm
         } else {
             resid_usd + cash - NOTIONAL_USD - comm
         };
@@ -629,8 +665,23 @@ mod tests {
         assert!((pnl_s - pnl_usd).abs() / pnl_usd.abs().max(1.0) < 1e-12);
     }
 
-    /// Abort après jambes complétées : pnl = -12*filled + cash - comm —
-    /// recalculé à la main ; la jambe avortée ne contribue rien.
+    /// Audit OG2-B5 : plus de fills que de jambes -> None, pas de panic
+    /// index hors borne.
+    #[test]
+    fn settle_rejects_more_fills_than_legs() {
+        let mut e = Engine::new(book_distorted());
+        let pt = build_tables();
+        let pi = path_jpy_cad(&pt); // chemin à 1 jambe
+        e.sync(1_000);
+        // 2 fills sur 1 jambe : avant = panic legs[1] hors borne
+        assert!(e
+            .exec_settle(pi, &[(1.0, 1.0), (1.0, 1.0)], false, &pt)
+            .is_none());
+    }
+
+    /// Abort après jambes complétées : pnl = -abort_cost + cash - comm
+    /// avec abort_cost = med_rel x notional + comm par jambe remplie
+    /// (audit OG2-D2) ; la jambe avortée ne contribue rien.
     #[test]
     fn settle_abort_matches_hand_computation() {
         let mut e = Engine::new(book_distorted());
@@ -638,12 +689,13 @@ mod tests {
         let pi = path_jpy_cad(&pt); // 1 jambe JPY->CAD, filled=0
         e.sync(1_000);
         let (pnl, filled, parts, _resid) = e.exec_settle(pi, &[], true, &pt).unwrap();
-        assert_eq!((pnl, filled, parts), (0.0, 0, 0)); // -12*0+0-0
+        assert_eq!((pnl, filled, parts), (0.0, 0, 0)); // cout 0 x filled
 
         // même jambe mais remplie puis abort « impossible » : pour un
-        // chemin à 1 jambe filled=1 -> -12 + 0 - comm (d=-1 -> px_node 1/ask)
+        // chemin à 1 jambe filled=1 -> -cout(jambe) + 0 - comm
+        // (d=-1 -> px_node 1/ask)
         let si = e.fx_si[pt.paths[pi][0] as usize].unwrap();
-        let (_, _, ask, _, _) = e.quote_at_f(si, 1_000.0).unwrap();
+        let (_, bid_l, ask, _, _) = e.quote_at_f(si, 1_000.0).unwrap();
         let (pnl2, filled2, _, resid2) = e
             .exec_settle(pi, &[(1.0, 1.0 / ask)], true, &pt)
             .unwrap();
@@ -653,7 +705,13 @@ mod tests {
         // paire inverse USDCAD -> base USD)
         let comm = crate::fees::COMM_PER_SIDE_USD / up_cad
             + crate::fees::COMM_PER_SIDE_USD;
-        assert!((pnl2 - (-12.0 - comm)).abs() < 1e-9);
+        // coût de débouclage par arête : med_rel x notional + comm —
+        // la fixture a un spread relatif de 2 bp -> ~23 $ (avant : 12 $ fixe)
+        let abort_cost = e.med[si] / ((bid_l + ask) * 0.5)
+            * crate::fees::NOTIONAL_USD
+            + crate::fees::COMM_PER_SIDE_USD;
+        assert!((abort_cost - 23.0).abs() < 1.0);
+        assert!((pnl2 - (-abort_cost - comm)).abs() < 1e-9);
         // resid_usd = position abandonnée marquée exécutable : 15M JPY ->
         // CAD liquidés à 1/ask(USDCAD)
         assert!((resid2 - 15e6 / ask / (1.35 * 1.0001)).abs() < 1e-6);

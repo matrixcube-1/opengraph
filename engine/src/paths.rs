@@ -114,6 +114,13 @@ pub fn build_tables() -> PathTables {
         t.p_s[pi] = node;
         for (li, &e) in path.iter().enumerate() {
             let (a, b) = pair_nodes(e as usize);
+            // audit OG2-B2 : un nœud hors de l'arête serait exécuté à
+            // l'envers (d=-1 silencieux) — on fige l'invariant à la
+            // construction des tables plutôt qu'à chaque jambe live.
+            assert!(
+                node == a || node == b,
+                "build_tables : nœud {node} hors arête ({a},{b})"
+            );
             let d: i8 = if node == a { 1 } else { -1 };
             t.p_dir[pi][li] = d;
             t.p_e[pi][li] = e as i8;

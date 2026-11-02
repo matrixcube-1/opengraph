@@ -67,3 +67,25 @@ Session de Londres demain (07:00 Zurich reprise auto des évals) :
 distribution en régime actif, diversité des clusters, taille des edges.
 La mesure définitive de l'exécutabilité reste le client Rust au débit
 natif des ticks (10-50/s/symbole) — en attente de l'approbation Spotware.
+
+## Addendum — scénario broker ECN $2 A/R + colocation ~1 ms
+
+Re-simulation du meme corpus (journal du 02/11) avec commission reduite
+a $1/cote/100k (comm_scale 0.3667) — detection seule, exec_seq chargeant
+toujours 3$ en interne (borne conservative) :
+
+| Metrique | $3/cote (IC) | **$1/cote (ECN negocie)** |
+|---|---|---|
+| Episodes detectes | ~800/h | **~3 900 en ~90 min (~2 600/h)** |
+| Net detecte moyen | +4.12$ | **+7.2$** |
+| PnL exec corrige* | +4.27$ | **~+7-8$** |
+| Resolutions | 100% done | 100% done |
+
+*correction arithmetique du delta de commission par jambe + liquidation
+(~+2.2/unite) — exec_seq ne prend pas comm_scale en parametre.
+A ~1 ms de distance les fills precedant le repricing (episodes p90 747 ms)
+deviennent quasi-certains : la borne optimiste MC devient realiste.
+
+**Questions a clarifier avec le broker** : protocole de l'API (FIX 4.4 ?
+proprietaire ? REST+WS ?), couverture des 28 paires Annexe J, mode
+netting des positions, environnement demo/pret a date.

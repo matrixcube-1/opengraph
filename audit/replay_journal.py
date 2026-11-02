@@ -50,6 +50,8 @@ def main():
     ap.add_argument("journal")
     ap.add_argument("--lat", type=float, default=2.5, help="latence jambe ms")
     ap.add_argument("--tau", type=float, default=0.69, help="tau_slip bp")
+    ap.add_argument("--scale", type=float, default=SCALE,
+                    help="comm_scale (0.3667 ~= 1$/cote/100k, 1.10 ~= 3$)")
     ap.add_argument("--max-exec", type=int, default=500)
     args = ap.parse_args()
 
@@ -61,7 +63,8 @@ def main():
         if t0 is None:
             t0 = t
         r = eng.on_tick(e, t, bid=bid, ask=ask, vol=0.0,
-                        fresh_ms=FRESH, spread_cap=CAP, comm_scale=SCALE)
+                        fresh_ms=FRESH, spread_cap=CAP,
+                        comm_scale=args.scale)
         n_ticks += 1
         last_t = t
         if r is not None and r[1] >= DDD:

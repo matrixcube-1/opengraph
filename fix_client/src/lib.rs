@@ -3,4 +3,5 @@
 //! Détection seule par défaut ; aucun ordre sans mode explicite.
 
 pub mod codec;
+pub mod md;
 pub mod session;

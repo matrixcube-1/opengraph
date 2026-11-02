@@ -35,21 +35,32 @@ def convert(ticks_dir, out_dir):
     out = Path(out_dir)
     buckets = defaultdict(list)               # (sym, day, hour) -> [(ms,ask,bid)]
     n = 0
+    bad = 0                                   # lignes rejetees (corrompues/tronquees)
     for f in sorted(Path(ticks_dir).glob("*.jsonl")):
         for line in open(f):
             if '"tick"' not in line:
                 continue
-            ev = json.loads(line)
-            if ev.get("ev") != "tick":
+            try:
+                ev = json.loads(line)
+                if ev.get("ev") != "tick":
+                    continue
+                ei = int(ev["e"])
+                if not (0 <= ei < len(pe.FX)):
+                    raise IndexError("e hors univers FX")
+                sym = pe.FX[ei]
+                t = int(ev["ts"])
+                ask, bid = float(ev["ask"]), float(ev["bid"])
+                if not (ask > 0 and bid > 0 and ask >= bid):
+                    raise ValueError("quote croisee/invalide")
+            except (ValueError, KeyError, IndexError, TypeError):
+                bad += 1
                 continue
-            sym = pe.FX[ev["e"]]
-            t = int(ev["ts"])
             # bucketing UTC : EPOCH du POC = minuit UTC de la date —
             # jour + heure doivent etre UTC (audit OG2-B4 : ne PAS
             # réutiliser mktime-timezone, cassé par le DST).
             lt = time.gmtime(t / 1000)
             day = time.strftime("%Y-%m-%d", lt)
-            buckets[(sym, day, lt.tm_hour)].append((t, ev["ask"], ev["bid"]))
+            buckets[(sym, day, lt.tm_hour)].append((t, ask, bid))
             n += 1
     files = 0
     for (sym, day, h), rows in sorted(buckets.items()):
@@ -65,7 +76,8 @@ def convert(ticks_dir, out_dir):
             for t, a, b in rows:
                 w.writerow((t - (t0_utc + h * 3_600_000), a, b, 0.0, 0.0))
         files += 1
-    print(f"convert: {n:,} ticks -> {files} fichiers horaires dans {out}")
+    print(f"convert: {n:,} ticks -> {files} fichiers horaires dans {out}"
+          + (f" ({bad} lignes rejetees)" if bad else ""))
 
 
 def scan(out_dir, days):

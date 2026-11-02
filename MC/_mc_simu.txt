@@ -1,0 +1,183 @@
+Simulation Monte Carlo — Validation des formules
+ Arbitrage FX à chemins ouverts — Document scellé (Dual Venue CME + IC Markets)
+ Verdict: OK  |  N = 12,000  |  seed = 20261025  |  chemins MC = 3,108
+1. Objectif et périmètre
+Cette simulation vérifie numériquement que les formules du document scellé sont correctement appliquées: DDD /
+Score, coûts Raw (commission + spread), conventions A/B anti double-comptage, règle d'envoi DDD_eff > Coût_total,
+BIR ajusté exponentiel, p_persist borné, p_h proratisé, impact ησQ√L. Graphe: K8 devises + sous-ensemble de bouts
+(US500, DE30, XAUUSD, UK100). Recherche: énumération des chemins ouverts ≤ 3 jambes (+ bout optionnel).
+2. Plan d'expérience
+ Variante
+N
+Bruit mid (bps)
+Échelle spread
+Notionnel
+zero_noise
+3 000
+0
+1,0
+100 000
+quote_noise
+3 000
+5
+1,0
+100 000
+wide_spread
+2 000
+5
+1,7
+100 000
+edge_injected
+2 000
+3
+1,0
+100 000
+mixed (Q=50k)
+1 000
+8
+1,2
+50 000
+mixed (Q=200k)
+1 000
+8
+1,2
+200 000
+Générateur: numpy.random.Generator(seed=20261025). Coût canonique 3 jambes (conv. B) = 3 × (3,50 + 3,81) =
+21.93 USD.
+3. Contrôles analytiques (hors aléas)
+ Statut
+Contrôle
+Détail
+OK
+Coût 3 jambes = 21,93
+obtenu=21.9300
+OK
+Score ≡ DDD (identité)
+score=0.000000e+00 ddd=0.000000e+00 |∆|=0.00e+00
+OK
+DDD≈0 triangle cohérent
+ddd=0.000e+00
+OK
+B−A = 3×spread (11,43)
+B=21.93 A=10.50 ∆=11.43
+OK
+p_persist ∈ [0,1]
+vals=['0.450', '0.000', '0.000', '0.900', '1.000']
+OK
+p_h ≈ p_an·h (1 jour)
+p_h=5.534835e-05 approx=5.479452e-05
+OK
+Impact linéaire en Q (×2)
+i(1)=0.002000 i(2)=0.004000
+OK
+BIR_ajusté exp @500bps
+obtenu=0.606531 attendu=0.606531
+OK
+DDD_eff,CFD identité exacte
+dcf=41.561792 expected=41.561792 ph=1.405197e-04
+OK
+Règle d'envoi DDD>coût
+30>21.93→True; 20>21.93→False
+OK
+Net référence 30−21,93 = +8,07
+net=8.07
+4. Métriques Monte Carlo
+ Métrique
+Valeur
+N scénarios
+12,000
+Seed
+20261025
+Send rate conv. A
+0.5667%
+Send rate conv. B
+0.6083%
+
+Mean net B (tous)
+-4.2044 USD
+Mean net B | envoyé
+15.9484
+P(net&lt;0 | envoyé) B
+0.0000%
+P05 / P50 / P95 net B
+-12.52 / -7.31 / 17.09
+max |Score−DDD|
+0.000e+00
+p_persist borné
+OK
+p_h borné
+OK
+mean p_persist
+0.0479
+mean p_h
+1.160369e-07
+mean ∆ coût (B−A)
+5.0130 USD
+4.1 Par variante
+ Mode
+N
+Send rate B
+Mean net B
+Mean net|send
+P(neg|send)
+edge_injected
+2000
+3.650%
+12.560
+15.948
+0.000%
+mixed
+2000
+0.000%
+-8.117
+—
+—
+quote_noise
+3000
+0.000%
+-5.771
+—
+—
+wide_spread
+2000
+0.000%
+-10.048
+—
+—
+zero_noise
+3000
+0.000%
+-7.310
+—
+—
+
+5. Graphiques
+hist net B
+hist net sent B
+send rate by mode
+
+hist p persist
+scatter A vs B
+
+hist by notionnel
+
+6. Interprétation et verdict
+Verdict global: OK
+ Toutes les formules testées sont correctement appliquées.
+Formules validées dans cette campagne
+1. Score(π) = P_arr × Π r(e) − P_dep ≡ DDD unitaire (identité machine, max|err| ci-dessus).
+2. Coût 3 jambes Raw = 3×(3,50+3,81)=21,93 USD (conv. B).
+3. Convention A vs B: ∆ coût = n×spread (pas de double peine si une seule convention est choisie).
+4. DDD_eff = DDD_th − η σ Q √L (linéaire en Q vérifié).
+5. BIR_ajusté = BIR × exp(−γ Spread/P_mid), γ=10.
+6. p_persist borné dans [0,1] (max(0,BIR_adj), indicatrice Hurst).
+7. p_h = 1−(1−p_an)^(h) prorata horizon.
+8. ENVOYER ⇔ DDD_eff > Coût_total (+ filtres spread/S(h)/p_persist).
+Limites de la simulation
+Les mids et spreads sont synthétiques (pas de carnet live CME/IC). Les bouts sont un sous-ensemble. Les fenêtres
+d'annonce / rollover ne sont pas simulées. Hawkes est réduit à une intensité constante. Le MC valide l'application des
+formules, pas la rentabilité historique live. Dijkstra n'est pas utilisé ici: l'énumération est l'oracle du document scellé pour
+L≤3.
+Fichiers: /workspace/arbitrage-docs/mc/out/mc_scenarios_summary.csv,
+/workspace/arbitrage-docs/mc/out/mc_metrics.json, script /workspace/arbitrage-docs/mc/run_mc.py.
+ Octobre 2026 — Simulation interne — Chemins ouverts uniquement.

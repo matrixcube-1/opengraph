@@ -174,10 +174,35 @@ config.rs    TOML + secrets par env
 main.rs      bootstrap + boucle + housekeeping + reconnect/backoff/circuit breaker
 ```
 
-## Invariants testés (58 tests)
+## Invariants testés (60 tests)
 
 corrélation par `order.clientOrderId` ; jambe N+1 seulement après résolution de N ;
 fills crédités sur `deal.filledVolume` ; `frac_eff` sur la quantité envoyée ;
 abort ne crédite pas la jambe échouée ; résiduel = position nette par symbole -> unwind ;
 compte non-NETTED refusé ; volume = centièmes d'unité (1 lot = 10 000 000) ;
 prix ×1e5 ; limit sur la grille digits ; pas de nouvelle séquence en fenêtre de flatten.
+
+## Annexe — cBot `cs/OgDetect.cs` (pont optionnel, détection seule)
+
+cBot cTrader Automate qui porte `eval_at` (chemins ouverts, Convention A) —
+**aucun appel d'ordre, structurellement incapable de trader**. Rôle : mesurer
+la fréquence et la durée de vie des opportunités réelles chez IC Markets
+**avant** l'approbation Open API Spotware (les cBots n'en ont pas besoin —
+ils tournent sur le compte déjà connecté dans cTrader Desktop).
+
+Installation : cTrader Desktop -> Automate -> New cBot -> coller le fichier
+-> Build -> lancer sur un graphique EURUSD du compte DÉMO (l'accès disque
+demande AccessRights.FullAccess, déjà déclaré).
+
+Journal : `<JournalDir>/<YYYY-MM-DD>.jsonl` — même schéma que `journal.rs`
+(`{"ev":"tick","e":0..27,"bid":..,"ask":..,"ts":..}`) -> lu tel quel par
+`audit/ticks_to_poc.py` ; opportunités : `{"ev":"opportunity",...,"traded":false}`.
+
+Garde-fou de parité : au boot le bot évalue un livre synthétique à distorsion
+connue (même fixture que `engine/src/eval.rs` tests) et **refuse de démarrer**
+si l'argmax ou le signe du net diverge — vérifie le port sans compilateur externe.
+
+Divergences déclarées vs le moteur Rust (télémétrie, pas trading) :
+fraîcheur par détection de changement bid/ask (pas de ts venue par symbole en
+Automate) ; médiane de spread fenêtrée 512 ticks vs historique complet ;
+évaluation à chaque tick du symbole hôte (poll des 28) ; aucune exécution.

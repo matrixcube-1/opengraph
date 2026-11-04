@@ -1,0 +1,26 @@
+# ctrader_client — configuration BANC D'ESSAI LOCAL (mock_spotware)
+# Pointe le binaire sur une venue simulée en TCP clair loopback.
+# JAMAIS en prod : endpoint + tls=false = test uniquement.
+
+env = "demo"
+mode = "detect"
+ctid_trader_account_id = 0
+journal_dir = "journal_mock"
+require_netted = true
+reconcile_s = 15
+
+# Destination locale — le serveur simulé (mock_spotware).
+# tls=false n'est accepté que sur loopback (garde config::load).
+[endpoint]
+host = "127.0.0.1"
+port = 50350
+tls = false
+
+[engine]
+fresh_ms = 909.0
+spread_cap = 1.76
+comm_scale = 1.10
+ddd_min = 2.66
+q_min = 0.5
+leg_timeout_ms = 2000
+req_timeout_s = 10

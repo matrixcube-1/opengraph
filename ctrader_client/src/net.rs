@@ -21,7 +21,7 @@ use crate::codec::{decode_msg, frame};
 use crate::config::Env;
 use crate::err::ClientError;
 use crate::heartbeat::LastRx;
-use crate::io::{FrameIo, FrameRd, FrameWr, TlsIo};
+use crate::io::{FrameIo, FrameRd, FrameWr, NetIo, TcpIo, TlsIo};
 use crate::pending::Pending;
 use crate::proto::spotware::ProtoMessage;
 
@@ -71,28 +71,41 @@ impl Drop for NetHandle {
     }
 }
 
-/// Connecte TCP+TLS (rustls, TCP_NODELAY) vers `env` — port 5035.
-pub async fn connect(env: Env, timeout: Duration) -> Result<TlsIo, ClientError> {
-    let addr = format!("{}:{}", env.host(), env.port());
+/// Connecte vers `env` (port 5035) ou vers `ep` si surchargé (banc local).
+/// `ep.tls` sélectionne TLS rustls / TCP clair ; le clair n'est valable
+/// qu'en loopback (vérifié par `config::load`).
+pub async fn connect(
+    env: Env,
+    ep: Option<&crate::config::Endpoint>,
+    timeout: Duration,
+) -> Result<NetIo, ClientError> {
+    let (host, port, tls) = match ep {
+        Some(e) => (e.host.as_str(), e.port, e.tls),
+        None => (env.host(), env.port(), true),
+    };
+    let addr = format!("{host}:{port}");
     let tcp = tokio::time::timeout(timeout, TcpStream::connect(&addr))
         .await
         .map_err(|_| ClientError::Timeout("tcp connect"))?
         .map_err(ClientError::from)?;
     tcp.set_nodelay(true).ok();
 
+    if !tls {
+        return Ok(NetIo::Tcp(TcpIo::new(tcp)));
+    }
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let cfg = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
     let connector = TlsConnector::from(std::sync::Arc::new(cfg));
-    let name = tokio_rustls::rustls::pki_types::ServerName::try_from(env.host())
+    let name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|e| ClientError::Inconsistent(format!("servername: {e}")))?;
     let tls = tokio::time::timeout(timeout, connector.connect(name, tcp))
         .await
         .map_err(|_| ClientError::Timeout("tls handshake"))?
         .map_err(ClientError::from)?;
-    Ok(TlsIo::new(tls))
+    Ok(NetIo::Tls(TlsIo::new(tls)))
 }
 
 /// Lance la pompe sur un `FrameIo` quelconque (TLS réel ou `MemIo` mock).

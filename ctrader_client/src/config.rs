@@ -96,10 +96,25 @@ impl Default for EngineParams {
     }
 }
 
+/// Surcharge de destination — banc d'essai local uniquement.
+/// Absente en prod : `env` pilote host/port des vrais endpoints.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Endpoint {
+    pub host: String,
+    pub port: u16,
+    /// `false` = TCP clair — accepté uniquement sur loopback (jamais de
+    /// secrets applicatifs en clair vers l'extérieur).
+    #[serde(default = "d_true")]
+    pub tls: bool,
+}
+
 /// Configuration complète d'un lancement.
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub env: Env,
+    /// Surcharge locale (mock venue / banc d'essai) — `None` en prod.
+    #[serde(default)]
+    pub endpoint: Option<Endpoint>,
     #[serde(default)]
     pub mode: Mode,
     /// `ctidTraderAccountId` du compte cible.
@@ -168,6 +183,17 @@ pub fn load(path: &str) -> Result<Config, ClientError> {
         .map_err(|e| ClientError::Inconsistent(format!("config {path}: {e}")))?;
     if c.mode == Mode::Trade && c.ctid_trader_account_id == 0 {
         return Err(ClientError::Inconsistent("ctid_trader_account_id requis".into()));
+    }
+    if let Some(ep) = &c.endpoint {
+        if !ep.tls {
+            let h = ep.host.to_ascii_lowercase();
+            let loopback = h == "127.0.0.1" || h == "localhost" || h == "::1";
+            if !loopback {
+                return Err(ClientError::Inconsistent(
+                    "endpoint tls=false exige un host loopback (secrets en clair)".into(),
+                ));
+            }
+        }
     }
     Ok(c)
 }

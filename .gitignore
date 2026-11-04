@@ -52,3 +52,5 @@ _vendor_ctrader/
 # Artefacts régénérables
 audit/_*.txt
 audit/trades_extract.json
+journal_mock/
+*.log

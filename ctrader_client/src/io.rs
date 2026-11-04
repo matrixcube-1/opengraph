@@ -96,6 +96,119 @@ impl FrameWr for TlsWr {
     }
 }
 
+// -------------------------------------------------------------- TCP clair
+
+/// Connexion TCP **en clair** — banc d'essai local uniquement (mock venue).
+/// Jamais utilisable pour la prod : le proto transporterait les secrets
+/// d'app sans chiffrement. `config::Endpoint` refuse `tls=false` hors
+/// loopback pour cette raison.
+pub struct TcpIo {
+    rd: TcpRd,
+    wr: TcpWr,
+}
+pub struct TcpRd {
+    rd: tokio::io::ReadHalf<TcpStream>,
+}
+pub struct TcpWr {
+    wr: tokio::io::WriteHalf<TcpStream>,
+}
+
+impl TcpIo {
+    pub fn new(stream: TcpStream) -> Self {
+        let (rd, wr) = tokio::io::split(stream);
+        Self {
+            rd: TcpRd { rd },
+            wr: TcpWr { wr },
+        }
+    }
+}
+
+impl FrameIo for TcpIo {
+    type Rd = TcpRd;
+    type Wr = TcpWr;
+    fn split(self) -> (TcpRd, TcpWr) {
+        (self.rd, self.wr)
+    }
+}
+
+impl FrameRd for TcpRd {
+    async fn recv(&mut self) -> Result<Vec<u8>, ClientError> {
+        let mut len_buf = [0u8; 4];
+        self.rd.read_exact(&mut len_buf).await?;
+        let n = u32::from_be_bytes(len_buf) as usize;
+        if n > MAX_FRAME_SIZE {
+            return Err(ClientError::FrameTooLong(n));
+        }
+        if n == 0 {
+            return Err(ClientError::EmptyFrame);
+        }
+        let mut buf = vec![0u8; n];
+        self.rd.read_exact(&mut buf).await?;
+        Ok(buf)
+    }
+}
+
+impl FrameWr for TcpWr {
+    async fn send<'a>(&'a mut self, bytes: &'a [u8]) -> Result<(), ClientError> {
+        self.wr.write_all(bytes).await?;
+        self.wr.flush().await?;
+        Ok(())
+    }
+}
+
+// ------------------------------------------------------------- Io unifié
+
+/// Transport résolu par `connect` : TLS en prod, TCP clair en banc local.
+pub enum NetIo {
+    Tls(TlsIo),
+    Tcp(TcpIo),
+}
+
+pub enum NetRd {
+    Tls(TlsRd),
+    Tcp(TcpRd),
+}
+
+pub enum NetWr {
+    Tls(TlsWr),
+    Tcp(TcpWr),
+}
+
+impl FrameIo for NetIo {
+    type Rd = NetRd;
+    type Wr = NetWr;
+    fn split(self) -> (NetRd, NetWr) {
+        match self {
+            NetIo::Tls(t) => {
+                let (r, w) = t.split();
+                (NetRd::Tls(r), NetWr::Tls(w))
+            }
+            NetIo::Tcp(t) => {
+                let (r, w) = t.split();
+                (NetRd::Tcp(r), NetWr::Tcp(w))
+            }
+        }
+    }
+}
+
+impl FrameRd for NetRd {
+    async fn recv(&mut self) -> Result<Vec<u8>, ClientError> {
+        match self {
+            NetRd::Tls(r) => r.recv().await,
+            NetRd::Tcp(r) => r.recv().await,
+        }
+    }
+}
+
+impl FrameWr for NetWr {
+    async fn send<'a>(&'a mut self, bytes: &'a [u8]) -> Result<(), ClientError> {
+        match self {
+            NetWr::Tls(w) => w.send(bytes).await,
+            NetWr::Tcp(w) => w.send(bytes).await,
+        }
+    }
+}
+
 // -------------------------------------------------------------- Mémoire
 
 /// Duplex mémoire pour les tests : `MemIo` côté client, `MockPeer`

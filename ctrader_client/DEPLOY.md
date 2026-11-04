@@ -226,3 +226,28 @@ ligne de commande visible) — c'est la seule etape manuelle restante. Le bot
 apparait aussi dans cTrader Desktop -> Automate -> OgDetect -> Play sur EURUSD.
 Self-test de parite valide contre le moteur Rust (meme fixture eval.rs :
 coherent net<0, distorsion CADJPY -> 1 jambe JPY->CAD, net>0).
+
+## Annexe B — Banc d'essai local (mock venue, pipeline complet)
+
+`src/bin/mock_spotware.rs` : venue simulée parlant le vrai protocole
+(trame 4B-BE + ProtoMessage, REQ->RES=req+1, prix x1e5, 28 symboles).
+Flux : 7 majors en random walk + croisés dérivés (book sans arbitre),
+désynchronisation CHFJPY -30 bp injectée toutes les `disloc_ms` pendant ~2 s.
+
+```bash
+cargo build --bin mock_spotware --bin ctrader_client
+./target/debug/mock_spotware 127.0.0.1:50350 20000   # disloc toutes les 20 s
+CTRADER_CLIENT_ID=x CTRADER_CLIENT_SECRET=x \
+  CTRADER_ACCESS_TOKEN=x ./target/debug/ctrader_client config/ctrader_mock.toml
+```
+
+`config/ctrader_mock.toml` : `[endpoint] host="127.0.0.1" port=50350 tls=false`
+— `tls=false` n'est accepté par `config::load` que sur loopback (secrets en
+clair, jamais vers l'extérieur). En prod `[endpoint]` reste absent : `env`
+pilote les vrais hôtes et TLS est toujours actif.
+
+Run vérifié (200 s) : bootstrap complet (auth -> NETTED -> 28 symboles ->
+subscribe -> baseline reconcile), warm-up 100 ticks/symbole a ~77 s,
+0 opportunité hors bursts, 340 opportunités en 5 bursts de ~2,2 s pile sur
+les fenêtres injectées, 14 reconciles non divergents, 7 248 ticks/symboles
+journalisés dans journal_mock/ticks/.

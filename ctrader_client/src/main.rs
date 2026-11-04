@@ -1280,7 +1280,7 @@ async fn main() {
     let mut failures = 0u32;
     loop {
         let last_rx = ctrader_client::heartbeat::LastRx::default();
-        let io = match connect(cfg.env, Duration::from_secs(10)).await {
+        let io = match connect(cfg.env, cfg.endpoint.as_ref(), Duration::from_secs(10)).await {
             Ok(io) => io,
             Err(e) => {
                 failures += 1;

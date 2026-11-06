@@ -66,6 +66,26 @@ Décisions structurantes :
 - **Économie réelle** — commission 3 $/côté/100 K (taux négocié cTrader,
   6 $ AR) ; spreads réels tick par tick ; slippage et rejets modélisés.
 
+## Rôle dans l'écosystème FX
+
+Le système est un **arbitragiste de désynchronisation de cotations**, en
+*liquidity taker* pur — pas un teneur de marché (aucune quote postée, le
+spread est payé sur chaque jambe). Sa fonction économique est vertueuse
+pour l'écosystème :
+
+- **Il applique la loi du prix unique** — chaque trade frappe le côté
+  décalé et consomme la liquidité au prix incohérent, ce qui résorbe la
+  désynchronisation et resynchronise les 28 paires entre elles.
+- **Il est payé pour la dispersion qu'il corrige** — le profit correspond
+  exactement à l'incohérence éliminée : rémunération du service de
+  cohésion du marché, pas extraction de valeur sur le flow des autres.
+- **Zéro inventaire porté** — résiduel liquidé immédiatement (Convention
+  A), aucune position overnight : le système ne repousse pas le risque
+  sur la venue ni ne déséquilibre son book.
+- **Taille modeste, direction honnête** — à ~1 lot/séquence sur un ECN
+  retail, la contribution individuelle est marginale, mais de signe
+  correct : forces de cohésion du marché, pas de dispersion.
+
 ## Contenu du dépôt
 
 | Chemin | Rôle |

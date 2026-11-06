@@ -91,9 +91,18 @@ RUST_LOG=info /opt/arb/ctrader/ctrader_client /opt/arb/ctrader/config.toml
 ```
 
 En service : lancer via systemd (`EnvironmentFile=/opt/arb/ctrader/secrets.env`,
-`Restart=on-failure`) et **redémarrer une fois par jour hors session (ex. 21:30
-Zurich)** : les séries de ticks et la médiane des spreads s'accumulent en mémoire
-depuis le démarrage. Le reconcile de démarrage réadopte toute position résiduelle.
+`Restart=always`, `StartLimitIntervalSec=120`, `StartLimitBurst=5`) et
+**redémarrer une fois par jour hors session (ex. 21:30 Zurich)** : les séries
+de ticks et la médiane des spreads s'accumulent en mémoire depuis le démarrage.
+Le reconcile de démarrage réadopte toute position résiduelle.
+
+ATTENTION — `Restart=always` est requis, PAS `on-failure` : le circuit
+breaker (5 connexions refusées OU 10 sessions mortes consécutives) termine
+le process par un arrêt **propre** (exit 0), ce qui est voulu — ne pas
+marteler une venue down. Mais côté systemd c'est un stop normal :
+`on-failure` ne redémarrerait pas et le collecteur resterait mort jusqu'à
+intervention après un simple blip réseau > ~20 s (fenêtre de retry du
+backoff : ~1+2+4+8 s + jitter après une mort de session).
 
 ## 4. Séquence de mise en production
 
@@ -251,3 +260,10 @@ subscribe -> baseline reconcile), warm-up 100 ticks/symbole a ~77 s,
 0 opportunité hors bursts, 340 opportunités en 5 bursts de ~2,2 s pile sur
 les fenêtres injectées, 14 reconciles non divergents, 7 248 ticks/symboles
 journalisés dans journal_mock/ticks/.
+
+Hard test reconnexion (300 s, kill venue a T+135 s, restart +11 s) : mort
+de session détectée au RST, backoff 1->4 s, re-bootstrap complet en 14 s
+(auth -> NETTED -> symboles -> subscribe -> baseline), re-warm-up fail-closed
+(~80 s), reprise de la détection : 816 opportunités / 11 bursts, toutes dans
+les fenêtres injectées, 20 reconciles non divergents, 9 172 ticks. NB : les
+désynchronisations du mock ne s'arment qu'apres 90 s de flux (post warm-up).

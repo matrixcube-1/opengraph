@@ -49,7 +49,8 @@
 │   regime_indicators/ : boucle lente T̃/D/c⋆ + porte hystérésis   │
 │     + modulation gπ — publié ArcSwap, en aval de l'oracle        │
 │                                                                 │
-│ À FAIRE — cTrader venue adapter + couche sizing HiGHS           │
+│ FAIT — adapter cTrader (ctrader_client, client Rust autonome)   │
+│ À FAIRE — couche sizing HiGHS + feu vert externe (API, NETTED)  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -343,7 +344,11 @@ holdout 27/10 post-hoc **+11,25 $ / 6 execs** vs −60,65 / 134 execs
 
 ## 10. Reste à faire (production)
 
-- Adapter venue cTrader (DataClient/ExecutionClient custom) — étape 9.
+- Adapter venue cTrader — **fait** comme client Rust autonome
+  (`ctrader_client/`, pas via traits DataClient/ExecutionClient NT) :
+  protobuf/TCP-TLS, auth 3 couches, garde NETTED fail-closed, spots natifs,
+  exécution IOC séquentielle, reconcile ; 60 tests + auth réelle validée +
+  pipeline mock E2E. En attente : approbation app OpenAPI + compte NETTED.
 - Couche sizing HiGHS/Kelly/ES — nécessite `μ`/`σ²` par chemin non encore
   spécifiés ; `g_π` prêt en amont (§7 du doc de conception).
 - Hawkes MLE / `p_persist` — sémantique à finaliser, épisodes exportés.
@@ -353,7 +358,8 @@ holdout 27/10 post-hoc **+11,25 $ / 6 execs** vs −60,65 / 134 execs
 ## 10.1 Séquence de câblage — quand et pourquoi pas maintenant
 
 ```
-MAINTENANT   → adapter cTrader + shadow live (le bottleneck réel)
+MAINTENANT   → feu vert externe : approbation app OpenAPI + compte NETTED
+             → detect-only natif sur ctrader_client (shadow live)
 PUIS         → Hawkes MLE (stats offline, épisodes déjà exportés)
              → porte hystérésis en overlay risque / kill-switch
              → collecte μ/σ par chemin sur flux réel

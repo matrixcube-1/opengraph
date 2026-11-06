@@ -27,7 +27,9 @@ univers FX pur (8 devises, 28 paires).
 | Hold-out 27/10 (aveugle, `ddd_min=0`) | **−60,65 $** / 134 execs — jour calme, saignement sous-marginal |
 | **Audit du seuil (31/10)** | Plateau `ddd_min ∈ [2,4]` sur flux venue → **retenu 2,5 $** ; holdout post-hoc **+11,25 $** / 6 execs |
 | Indicateurs de régime (`regime_indicators/`) | Crate sœur testée (43 tests) : T̃, D/c⋆, hystérésis, modulation gπ — télémétrie, en aval de l'oracle |
-| Adapter venue cTrader | Non démarré (runbook étape 9) |
+| Adapter venue cTrader (`ctrader_client/`) | **Implémenté + testé (60 tests)** — auth réelle validée sur `demo.ctraderapi.com`, pipeline complet prouvé sur mock venue (re-bootstrap + reconnexion), fail-closed NETTED. En attente : approbation app OpenAPI + conversion NETTED du compte |
+| Adapter FIX 4.4 ECN (`fix_client/`) | Codec + session + market data V/W/X faits (18 tests) — transport TLS + ordres en attente spec venue + creds UAT |
+| Calibrage corpus cTrader réel (Optuna, cBot 2–4 nov.) | Terminé — `journal_ecn_wide` : `fresh=985, cap=2.19, ddd_min=11.8, tau=1.23`, 3/3 jours positifs ; **holdout sur jour futur complet en attente** |
 
 **Pile serveur** : Ubuntu · Rust 1.99 (rustup `~/.cargo`) · `venv-og` Python
 3.14 — `maturin` build de `engine/` (wheel `opengraph` cp314) +
@@ -73,6 +75,8 @@ Décisions structurantes :
 | `MC/` | Documents canoniques : `document_scelle.txt`, `constitution_unifiee.txt`, inventaire Optuna |
 | `Broker/` | Spécifications produit IC Markets (PDS Forex/Indices/Commodities/CFD) |
 | `engine/` | Moteur Rust `opengraph` — cible de production (Convention A) + binding pyo3 |
+| `ctrader_client/` | Client cTrader Open API (protobuf/TCP-TLS) : auth, garde NETTED, spots natifs, exécution IOC séquentielle, reconcile, journal — binaire de production + mock venue `mock_spotware` |
+| `fix_client/` | Adapter FIX 4.4 pour le venue ECN négocié (codec/session/MD) — en cours |
 | `regime_indicators/` | Crate sœur — tension T̃, dominance D/c⋆, hystérésis, modulation gπ |
 | `backup_pdf/` | Versions pré-purge des documents canoniques (piste d'audit) |
 | `AGENTS.md` | Notes opérationnelles projet (protocoles, décisions, runbook) |
@@ -108,8 +112,18 @@ Modèle rapide `exec_seq` (référence de palier, in-sample 22+23) :
 - Séquence 3 jambes : **7,5 ms** vs persistance médiane des épisodes **296 ms**
   (p90 7,25 s) — la fenêtre temporelle n'est pas le goulot
 
+**Corpus cTrader réel** (cBot `OgDetect`, 2–4 nov., ticks IC Markets via
+journal JSONL — pas Dukascopy) :
+
+- Optuna `journal_ecn_wide` : **+4 059 $** best, params `fresh=985,
+  cap=2.19, ddd_min=11.8, tau=1.23` — le marché IC ne paie que les grosses
+  désynchronisations (ddd_min monte à ~12 vs 2,66 calibré Dukascopy)
+- Test anti-overfit par jour : 3/3 jours positifs (+4 060 / +2 840 / +1 972 $)
+- **Holdout sur un jour futur complet requis avant déploiement** de ces
+  paramètres (corpus brûlé par la calibration)
+
 Détail complet : `audit/RAPPORT_INSAMPLE.md` · `audit/HOLDOUT_2026-10-27.md`
-· `docs/07_REGIME_SEUIL.md`.
+· `docs/07_REGIME_SEUIL.md` · `MC/OPTUNA_JOURNAL_REEL_2026-11-04.md`.
 
 ## Feuille de route (runbook Solution A)
 

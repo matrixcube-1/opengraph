@@ -90,9 +90,15 @@
 - Nouveau holdout propre = 27/10 (le 26/10 est « brûlé » — M2 : réutilisé
   plusieurs fois pendant les campagnes). Recalibrage sous Convention A
   stricte requis avant tout mode trade.
-- SSH serveur durci : `PasswordAuthentication no`, `PermitRootLogin
-  prohibit-password`, `KbdInteractiveAuthentication no`
-  (`/etc/ssh/sshd_config.d/00-arb-hardening.conf`).
+- SSH serveur : ATTENTION, le durcissement documenté ci-avant n'est PAS
+  appliqué sur la box actuelle (vérifié 06/11 — `00-arb-hardening.conf`
+  absent, `50-cloud-init.conf` => `PasswordAuthentication yes` +
+  `PermitRootLogin yes`). Accès root par mot de passe fonctionne ; la
+  clé `~/.ssh/id_ed25519` est installée. À durcir avant prod (désactiver
+  le mot de passe une fois la clé confirmée).
+- Serveur Vultr prod : `root@104.238.181.77` (Silicon Valley) — 4 vCPU,
+  7,4 Go RAM, 130 Go libres, Ubuntu. Mot de passe dans `C:\arb_secrets\`
+  (hors git). Pas encore de toolchain Rust installée.
 
 ## Téléchargement Dukascopy (dukascopy-node 1.51.0)
 - `-to` est EXCLUSIF : pour un mois complet, `-to` = 1er jour du mois suivant.
@@ -106,7 +112,9 @@
 - `pull_all.py` campagne (ledger `/opt/arb/data/ledger.json`) · `systemd_install.sh` services
 - `verify_coverage.py` contrôle qualité (jours ouvrés manquants, bid≤ask, monotonie), remise en file ≤ 2
 - `audit_quality.py` audit multi-facteurs détaillé · `test_pipeline.py` tests hors ligne (Linux)
-- `ssh_run.py` : `ARB_HOST` + clé `~/.ssh/arb_ed25519` (pas de mot de passe dans le code)
+- `ssh_run.py` : `ARB_HOST` + clé SSH (pas de mot de passe dans le code).
+  Clé effectivement installée sur la box : `~/.ssh/id_ed25519`
+  (`arb_ed25519` est refusée — Permission denied, 06/11)
 
 ## POC 3 jours (serveur $ARB_HOST, /opt/arb/poc)
 - `fetch_poc.py` : `.bi5` direct Python (pas de dukascopy-node), 3 jours (22/23/26 oct. 2026),
@@ -145,6 +153,22 @@
   réimplémenté en Rust (décision post-PoC).
 - Cadrage : uniquement ce qu'IC Markets considère acceptable (univers Annexe J,
   PDS S1-S4, pas de CME dans l'implémentation IC).
+
+## Client cTrader Open API (`ctrader_client/`) — état 06/11/2026
+- Implémenté + testé : 60/60 tests, auth réelle validée sur
+  `demo.ctraderapi.com:5035` (app_auth → ctid → account_auth), pipeline
+  complet prouvé sur `mock_spotware` (kill/restart venue : re-bootstrap +
+  re-warm-up fail-closed + détection reprise — voir DEPLOY.md annexe B).
+- Fix rustls `CryptoProvider::ring` installé au boot (commit 9202b4c).
+- Bloquants externes : approbation app `UltraGraph 2.0` (client_id
+  `47397_...`) + conversion NETTED du compte `49404217` (HEDGED → support
+  IC Markets saisi). Les tokens OAuth sont liés au client_id : régénérer
+  access+refresh pour la nouvelle app après approbation.
+- Secrets dans `C:\arb_secrets\ctrader_ultragraph.env` — JAMAIS dans git.
+- systemd prod : `Restart=always` OBLIGATOIRE (breaker sort en exit 0 —
+  `on-failure` ne relancerait pas après un blip venue, voir DEPLOY.md §3).
+- cBot OgDetect arrêté le 04/11 (corpus 2-4 nov. collecté) — le client
+  natif devient la source de vérité une fois NETTED + app approuvée.
 
 ## Nouveau broker ECN négocié (utilisateur, 02/11/2026) — chemin prioritaire
 - **Commission 2 $ A/R/100 K** (1 $/côté) — vs 3 $/côté IC : économie ~×2

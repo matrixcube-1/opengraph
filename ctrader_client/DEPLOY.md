@@ -22,6 +22,14 @@ Et dans le TOML : `ctid_trader_account_id` du compte démo NETTED
 Fichier d'environnement serveur recommandé : `/opt/arb/ctrader/secrets.env`
 (`chmod 600`, propriétaire du service, hors git).
 
+**Statut des prérequis (nov. 2026)** : app `UltraGraph 2.0` soumise, en attente
+d'approbation Spotware ; le compte démo `49404217` est `HEDGED` → conversion
+NETTED demandée au support IC Markets. ATTENTION : l'access token OAuth est
+lié au `client_id` émetteur — les tokens d'une app précédente sont refusés
+à l'`account_auth` ; régénérer access+refresh pour la nouvelle app après
+approbation. Le garde `check_netted` a été vérifié en vrai : session tuée
+proprement sur `HEDGED` (auth app + compte OK avant).
+
 ## 2. Paramètres calibrés (figés — ne pas modifier sans recalibrage)
 
 Source : Optuna `poc_exec_fxcur`, trial #87 (28 FX, 22+23/10 in-sample, holdout 26/10).
@@ -73,7 +81,7 @@ sera inférieure (rejets, slippage, flux IC ≠ Dukascopy, coût des débouclage
 ```bash
 # Rust si absent : curl https://sh.rustup.rs -sSf | sh
 cd /opt/arb/opengraph/ctrader_client     # clone du dépôt
-cargo test                               # attendu : 56 passed, 0 failed
+cargo test                               # attendu : 60 passed, 0 failed
 cargo build --release
 install -D target/release/ctrader_client /opt/arb/ctrader/ctrader_client
 install -D config/ctrader.toml /opt/arb/ctrader/config.toml   # puis éditer
@@ -231,10 +239,15 @@ ctrader-cli.exe run "...\Robots\OgDetect.algo" \
 ```
 
 Le `run` requiert le cTID + mot de passe cTrader (fichier hors git, jamais en
-ligne de commande visible) — c'est la seule etape manuelle restante. Le bot
-apparait aussi dans cTrader Desktop -> Automate -> OgDetect -> Play sur EURUSD.
+ligne de commande visible). Le bot apparait aussi dans cTrader Desktop ->
+Automate -> OgDetect -> Play sur EURUSD.
 Self-test de parite valide contre le moteur Rust (meme fixture eval.rs :
 coherent net<0, distorsion CADJPY -> 1 jambe JPY->CAD, net>0).
+
+Historique : le bot a collecte les journaux reels du 2 au 4 nov. 2026
+(~2,7 M ticks, ~172 Mo dans C:\arb_cs_journal\) — corpus de la calibration
+`journal_ecn`/`journal_ecn_wide`. Arrete le 4 nov. ; ne pas relancer tant
+que le client Open API natif n'est pas la source de verite.
 
 ## Annexe B — Banc d'essai local (mock venue, pipeline complet)
 

@@ -103,6 +103,7 @@ public partial class OgTrade : Robot
     int _consecFail = 0;
     readonly Dictionary<string, int> _symIdx = new Dictionary<string, int>();
     long _evtTick = 0, _evtSymTick = 0, _evtTimer = 0, _lastEvtLog = 0;
+    long _lastOppT = 0; double _lastOppNet = 0;
 
     StreamWriter _j = null; string _jDay = "";
 
@@ -217,9 +218,17 @@ public partial class OgTrade : Robot
         if (_busy || t - _lastSeq < MinSeqGapMs) return;
         var r = EvalAt(t);
         if (r == null) return;
+        if (r.Value.Net > 0 &&
+            (r.Value.Net > _lastOppNet + 0.05 || t - _lastOppT > 5000))
+        {   // journalise les fenetres positives (dedup : 1er +0 / nouveau
+            // pic +0.05 / heartbeat 5 s) — les misses sous seuil servent
+            // au recalibrage ddd (combien d'edge laisse-t-on)
+            _lastOppNet = r.Value.Net; _lastOppT = t;
+            LogOpp(t, r.Value.Pi, r.Value.Net, r.Value.Ddd,
+                   r.Value.Net >= DddMin);
+        }
         if (r.Value.Net >= DddMin)
         {
-            LogOpp(t, r.Value.Pi, r.Value.Net, r.Value.Ddd);
             RunSeq(r.Value.Pi, t);
         }
     }
@@ -509,13 +518,14 @@ public partial class OgTrade : Robot
         _j.WriteLine(string.Format(CultureInfo.InvariantCulture,
             "{{\"ev\":\"tick\",\"e\":{0},\"bid\":{1:R},\"ask\":{2:R},\"ts\":{3}}}", e, bid, ask, t));
     }
-    void LogOpp(long t, int pi, double net, double ddd)
+    void LogOpp(long t, int pi, double net, double ddd, bool traded)
     {
         EnsureJ(t);
         var legs = string.Join(",", _paths[pi].Select(e => "\"" + FX[e] + "\""));
         _j.WriteLine(string.Format(CultureInfo.InvariantCulture,
-            "{{\"ev\":\"opportunity\",\"t0\":{0},\"pi\":{1},\"net_usd\":{2:R},\"ddd_usd\":{3:R},\"start\":\"{4}\",\"legs\":{5},\"path\":[{6}],\"traded\":true}}",
-            t, pi, net, ddd, CURR[_pS[pi]], _paths[pi].Length, legs));
+            "{{\"ev\":\"opportunity\",\"t0\":{0},\"pi\":{1},\"net_usd\":{2:R},\"ddd_usd\":{3:R},\"start\":\"{4}\",\"legs\":{5},\"path\":[{6}],\"traded\":{7}}}",
+            t, pi, net, ddd, CURR[_pS[pi]], _paths[pi].Length, legs,
+            traded ? "true" : "false"));
         _j.Flush();
     }
     void LogLeg(long t0, string ev, int e, string side, double vol, double px)

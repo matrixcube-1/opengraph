@@ -34,7 +34,7 @@ using cAlgo.API.Internals;
 
 namespace cAlgo.Robots;
 
-public class OgTrade : Robot
+public partial class OgTrade : Robot
 {
     [Parameter("JournalDir", DefaultValue = "C:\\arb_og_trade")]
     public string JournalDir { get; set; }

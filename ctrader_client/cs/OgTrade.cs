@@ -18,22 +18,43 @@
 // Parametres : economie mesuree 10/11 — comm 4,00/100K (0,40/jambe a
 //   10K), fresh 8000 (send-on-change), ddd 0,27 (2,66@100K scale).
 
-// Parametres declares dans OgTrade.config.json (source-generes, meme
-// mecanisme qu'OgDetect) : JournalDir, FreshMs, SpreadCap, CommScale,
-// DddMin, MaxRangeBp (tol IOC 2,08 = 3xtau M7), QMin (fill partiel
-// min), MinSeqGapMs (cooldown), MaxConsecFail (breaker Mo4),
-// AllowLive (FATAL si compte live sans flag).
+// Parametres via [Parameter] (mecanisme standard cAlgo — independant
+// du SourceGenerators) : MaxRangeBp = tol IOC 2,08 bp (3xtau, M7) ;
+// QMin = fill partiel min ; MinSeqGapMs = cooldown ; MaxConsecFail =
+// breaker Mo4 ; AllowLive = FATAL si compte live sans flag.
 
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using cAlgo.API;
+using cAlgo.API.Internals;
 
 namespace cAlgo.Robots;
 
-public partial class OgTrade : Robot
+public class OgTrade : Robot
 {
+    [Parameter("JournalDir", DefaultValue = "C:\\arb_og_trade")]
+    public string JournalDir { get; set; }
+    [Parameter("FreshMs", DefaultValue = 8000.0)]
+    public double FreshMs { get; set; }
+    [Parameter("SpreadCap", DefaultValue = 1.76)]
+    public double SpreadCap { get; set; }
+    [Parameter("CommScale", DefaultValue = 1.10)]
+    public double CommScale { get; set; }
+    [Parameter("DddMin", DefaultValue = 0.27)]
+    public double DddMin { get; set; }
+    [Parameter("MaxRangeBp", DefaultValue = 2.08)]
+    public double MaxRangeBp { get; set; }
+    [Parameter("QMin", DefaultValue = 0.5)]
+    public double QMin { get; set; }
+    [Parameter("MinSeqGapMs", DefaultValue = 2000)]
+    public int MinSeqGapMs { get; set; }
+    [Parameter("MaxConsecFail", DefaultValue = 5)]
+    public int MaxConsecFail { get; set; }
+    [Parameter("AllowLive", DefaultValue = false)]
+    public bool AllowLive { get; set; }
 
     // ---------------- univers Annexe J (ORDRE IDENTIQUE universe::FX)
     static readonly string[] FX = {

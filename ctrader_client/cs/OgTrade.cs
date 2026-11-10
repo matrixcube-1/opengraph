@@ -235,34 +235,46 @@ public partial class OgTrade : Robot
 
     void OnSymbolTick(SymbolTickEventArgs a)
     {   // declenche sur CHAQUE tick symbole — la dislocation n'attend pas le chart
-        int e;
-        if (!_symIdx.TryGetValue(a.SymbolName, out e)) return;
-        _evtSymTick++;
-        HandleQuote(e, Now(), a.Bid, a.Ask);
-        TryDetect(Now());
+        try
+        {
+            int e;
+            if (!_symIdx.TryGetValue(a.SymbolName, out e)) return;
+            _evtSymTick++;
+            HandleQuote(e, Now(), a.Bid, a.Ask);
+            TryDetect(Now());
+        }
+        catch (Exception ex) { LogSys("ex symtick: " + ex.GetType().Name); }
     }
 
     protected override void OnTick()
     {
-        _evtTick++;
-        long t = Now();
-        RefreshAll(t);
-        TryDetect(t);
+        try
+        {
+            _evtTick++;
+            long t = Now();
+            RefreshAll(t);
+            TryDetect(t);
+        }
+        catch (Exception ex) { LogSys("ex ontick: " + ex.GetType().Name); }
     }
 
     protected override void OnTimer()
     {   // heartbeat fallback 250 ms + stats d'evenements (preuve du canal actif)
-        _evtTimer++;
-        long t = Now();
-        RefreshAll(t);
-        TryDetect(t);
-        _j?.Flush();   // buffer tick -> disque toutes les 250 ms
-        if (t - _lastEvtLog >= 300_000)
+        try
         {
-            _lastEvtLog = t;
-            LogSys(string.Format(CultureInfo.InvariantCulture,
-                "evt onTick={0} symTick={1} timer={2}", _evtTick, _evtSymTick, _evtTimer));
+            _evtTimer++;
+            long t = Now();
+            RefreshAll(t);
+            TryDetect(t);
+            _j?.Flush();   // buffer tick -> disque toutes les 250 ms
+            if (t - _lastEvtLog >= 300_000)
+            {
+                _lastEvtLog = t;
+                LogSys(string.Format(CultureInfo.InvariantCulture,
+                    "evt onTick={0} symTick={1} timer={2}", _evtTick, _evtSymTick, _evtTimer));
+            }
         }
+        catch (Exception ex) { try { LogSys("ex timer: " + ex.GetType().Name); } catch { } }
     }
 
     // ====================================================== eval_at
@@ -335,6 +347,20 @@ public partial class OgTrade : Robot
     void RunSeq(int pi, long t0)
     {
         _busy = true;
+        try
+        {
+            RunSeqCore(pi, t0);
+        }
+        catch (Exception ex)
+        {   // jamais de mort silencieuse a 3 h du matin : log + flatten
+            try { LogSys("ex seq: " + ex.GetType().Name); FlattenOg(); }
+            catch { }
+        }
+        finally { _busy = false; }
+    }
+
+    void RunSeqCore(int pi, long t0)
+    {
         try
         {
             if (!FlatCheck()) { LogSys("seq skip: compte non plat"); return; }
@@ -415,7 +441,7 @@ public partial class OgTrade : Robot
             if (_consecFail >= MaxConsecFail)
             { LogSys("breaker: " + _consecFail + " echecs consecutifs"); Stop(); }
         }
-        finally { _busy = false; }
+        finally { _busy = false; }   // idempotent avec le wrapper RunSeq
     }
 
     double Up(int c)

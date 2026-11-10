@@ -338,6 +338,27 @@ class Engine:
         rate_m = self.bid[m2v] / np.where(self.ask[m1v] > 0, self.ask[m1v], np.nan)
         rate = np.where(ISM, rate_m, rate_fx)
         rate = np.where(has_leg & leg_ok, rate, 1.0)
+        # unwind marge : chaque jambe FX remplie se REFERME à travers le
+        # book (re-traversée complète du spread) — les clôtures SONT la
+        # liquidation (audit marge 10/11, mesuré live -1,2 vs -0,37). La
+        # traversée de la paire USD du terminal (déjà pricée dans liq_rate)
+        # est retranchée pour les terminaux != USD.
+        mid_e = 0.5 * (bid_e + ask_e)
+        spr_frac = np.where(E >= 0,
+                            (ask_e - bid_e) / np.where(mid_e > 0, mid_e, np.nan),
+                            0.0)
+        unwind = np.where(has_leg & leg_ok & (E >= 0), spr_frac, 0.0).sum(1) * NOTIONAL
+        liq_spr = np.zeros(8)
+        for i, c in enumerate(CURR):
+            if c == "USD":
+                continue
+            sj2 = self.sidx.get(c + "USD")
+            if sj2 is None:
+                sj2 = self.sidx.get("USD" + c)
+            if sj2 is not None:
+                m2 = 0.5 * (self.bid[sj2] + self.ask[sj2])
+                liq_spr[i] = (self.ask[sj2] - self.bid[sj2]) / m2 if m2 > 0 else np.nan
+        unwind -= liq_spr[self.P_END[R]] * NOTIONAL
         all_ok = leg_ok.all(1) & (self.P_L[R] > 0)
         prod = np.prod(rate, 1)
         up_s = up[self.P_S[R]]
@@ -357,12 +378,14 @@ class Engine:
                            1.0)
         usd_out = qty_end * up_end * ratio_b
         valid_path = all_ok & np.isfinite(usd_out) & np.isfinite(up_s) & (~has_b | b_ok)
-        comm_fx = comm_leg.sum(1) * comm_scale
+        # comm aller-retour : ouverture + clôture par jambe FX — les
+        # clôtures SONT la liquidation (comm_end remplacée, pas additionnée).
+        comm_fx = 2.0 * comm_leg.sum(1) * comm_scale
         # P_CB (commissions métal/bout, meme modele notionnel cTrader) passe
         # aussi par comm_scale — sinon un hop metal echapperait a la
         # robustesse commission que subissent les jambes FX.
-        net = np.where(valid_path & np.isfinite(comm_fx) & np.isfinite(comm_end),
-                       usd_out - NOTIONAL - comm_fx - comm_end * comm_scale
+        net = np.where(valid_path & np.isfinite(comm_fx) & np.isfinite(unwind),
+                       usd_out - NOTIONAL - comm_fx - unwind
                        - self.P_CB[R] * comm_scale,
                        -np.inf)
         pi = int(np.argmax(net))
@@ -508,10 +531,33 @@ class Engine:
             filled += 1
             node = quote_i if node == base_i else base_i
             t = t_f
-        r, c = liq(node)
+        r, _c = liq(node)
         usd_end = qty * r                        # résiduel marqué exécutable (Conv. A)
-        comm += c
-        return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm, why="",
+        # unwind marge : chaque jambe remplie se REFERME à travers le book
+        # (traversée complète + 1 comm) — les clôtures SONT la liquidation ;
+        # la traversée de la paire USD du terminal (déjà dans r) est
+        # retranchée pour les terminaux != USD (audit marge 10/11).
+        unwind = 0.0
+        comm_rt = comm                            # ouvertures (+ partiels)
+        for ei in legs[:filled]:
+            if not isinstance(ei, (int, np.integer)):
+                continue                          # jambe métal : modèle inchangé
+            sj = self.sidx.get(FX[ei])
+            if sj is None:
+                continue
+            mid = 0.5 * (self.bid[sj] + self.ask[sj])
+            unwind += (self.ask[sj] - self.bid[sj]) / mid * NOTIONAL if mid > 0 else np.nan
+            a_i, _ = self.fe[FX[ei]]
+            comm_rt += COMM / up[a_i] if np.isfinite(up[a_i]) else COMM
+        if node != 0:
+            sj2 = self.sidx.get(CURR[node] + "USD")
+            if sj2 is None:
+                sj2 = self.sidx.get("USD" + CURR[node])
+            if sj2 is not None:
+                m2 = 0.5 * (self.bid[sj2] + self.ask[sj2])
+                if m2 > 0:
+                    unwind -= (self.ask[sj2] - self.bid[sj2]) / m2 * NOTIONAL
+        return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm_rt - unwind, why="",
                     fills=filled, dur=t - t0, parts=parts)
 
     def _abort(self, why, legs, filled, cash, comm, dur, parts=0):

@@ -61,7 +61,11 @@ pub struct EngineParams {
     pub req_timeout_s: u64,
 }
 fn d_fresh() -> f64 {
-    909.0
+    // send-on-change : la dernière quote reçue est l'état courant tant
+    // qu'elle n'est pas remplacée ; calé sur p99 des gaps inter-ticks
+    // mesurés sur le flux venue (10/11/2026 : p99 ≈ 6,1 s, pire symbole
+    // p95 ≈ 5,8 s). Le cas "flux mort" reste couvert par le watchdog 30 s.
+    8_000.0
 }
 fn d_cap() -> f64 {
     1.76
@@ -213,7 +217,7 @@ mod tests {
     #[test]
     fn default_params_match_frozen_p() {
         let p = EngineParams::default();
-        assert_eq!(p.fresh_ms, 909.0);
+        assert_eq!(p.fresh_ms, 8_000.0);
         assert_eq!(p.spread_cap, 1.76);
         assert_eq!(p.comm_scale, 1.10);
         assert_eq!(p.ddd_min, 2.66);
@@ -235,7 +239,7 @@ mod tests {
         assert_eq!(c.mode, Mode::Detect);
         assert_eq!(c.ctid_trader_account_id, 12345678);
         assert_eq!(c.engine.ddd_min, 3.0);
-        assert_eq!(c.engine.fresh_ms, 909.0); // défaut conservé
+        assert_eq!(c.engine.fresh_ms, 8_000.0); // défaut conservé
         assert!(c.require_netted);
     }
 

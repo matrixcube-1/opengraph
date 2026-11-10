@@ -27,7 +27,7 @@ reconcile_s = 30
 # calibration Optuna poc_exec_fxcur trial #87, Convention A exécutable
 # (holdout 26/10 : +61,58 $ / 12 trades / 0 abort ; 27/10 : +35,96 $ / 8 / 0)
 [engine]
-fresh_ms = 909.0
+fresh_ms = 8000.0  # send-on-change: p99 gaps mesures 6.1s (10-11-2026)
 spread_cap = 1.76
 comm_scale = 1.10
 ddd_min = 0.27         # trial #87 (2.66) mis à l'échelle du notionnel 10 K

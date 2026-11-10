@@ -72,7 +72,6 @@ public class OgTrade : Robot
     static readonly double COMM =
         COMM_100K * NOTIONAL / 100_000.0;  // 0,40 $/jambe = Rust comm_usd()
     const int WARMUP = 100, MED_WIN = 512;
-    const string LABEL = "OgTrade";
 
     // etat par paire
     readonly Symbol[] _sym = new Symbol[NPAIR];
@@ -283,7 +282,7 @@ public class OgTrade : Robot
                 var side = (d == 1) ? TradeType.Sell : TradeType.Buy;
                 double rangePips = MaxRangeBp * 1e-4 * px / sym.PipSize;
                 LogLeg(t0, "leg_send", e, side.ToString(), vol, px);
-                var res = ExecuteMarketRangeOrder(side, sym, vol, rangePips, LABEL);
+                var res = ExecuteMarketRangeOrder(side, sym.Name, vol, rangePips);
                 if (!res.IsSuccessful || res.Position == null)
                 {
                     LogLeg(t0, "leg_rej", e, side.ToString(), vol, px);
@@ -359,8 +358,10 @@ public class OgTrade : Robot
 
     void FlattenOg()
     {
+        // toute position sur nos 28 symboles est Og (FlatCheck exige
+        // le compte plat avant chaque sequence) — rien d'autre a cloturer
         foreach (var p in Positions.ToArray())
-            if (p.Label == LABEL) { ClosePosition(p); }
+            if (Array.IndexOf(FX, p.SymbolName) >= 0) { ClosePosition(p); }
     }
 
     // ------------------------------------------------- mediane fenetree

@@ -8,9 +8,10 @@
 //   - unwind immediat des jambes remplies sur abort
 //   - flatten des positions Og avant fin de session (21h Zurich -15min)
 //
-// Execution : ExecuteMarketRangeOrder (IOC natif cTrader : fill dans
-//   MaxRangeBp, sinon rejet) — pas de latence wire donnees : detection
-//   et envoi dans le meme OnTick.
+// Execution : ExecuteMarketOrder synchrone (IOC natif : fill immediat
+//   top-of-book a 10K — MarketRangeOrder n'existe qu'en async dans
+//   cette API) — pas de latence wire donnees : detection et envoi dans
+//   le meme OnTick.
 //
 // Journal : <JournalDir>/YYYY-MM-DD.jsonl — tick + opportunity +
 //   leg_send/leg_fill/leg_rej/settle (source de verite reconciliation).
@@ -72,6 +73,7 @@ public class OgTrade : Robot
     static readonly double COMM =
         COMM_100K * NOTIONAL / 100_000.0;  // 0,40 $/jambe = Rust comm_usd()
     const int WARMUP = 100, MED_WIN = 512;
+    const string LABEL = "OgTrade";
 
     // etat par paire
     readonly Symbol[] _sym = new Symbol[NPAIR];
@@ -280,9 +282,8 @@ public class OgTrade : Robot
                 double vol = sym.NormalizeVolumeInUnits(volBase, RoundingMode.Down);
                 if (vol < sym.VolumeInUnitsMin) { why = "vol<min"; aborted = true; break; }
                 var side = (d == 1) ? TradeType.Sell : TradeType.Buy;
-                double rangePips = MaxRangeBp * 1e-4 * px / sym.PipSize;
                 LogLeg(t0, "leg_send", e, side.ToString(), vol, px);
-                var res = ExecuteMarketRangeOrder(side, sym.Name, vol, rangePips);
+                var res = ExecuteMarketOrder(side, sym.Name, vol, LABEL);
                 if (!res.IsSuccessful || res.Position == null)
                 {
                     LogLeg(t0, "leg_rej", e, side.ToString(), vol, px);

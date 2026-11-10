@@ -415,19 +415,21 @@ public partial class OgTrade : Robot
         TimeZoneInfo.FindSystemTimeZoneById("W. Europe Standard Time");
     static bool InSession(long tMs)
     {
+        // OTC FX : detection continue lun-ven. Ferme seulement sam/dim
+        // (le flux de quotes s'arrete de toute facon au week-end).
         var z = TimeZoneInfo.ConvertTimeFromUtc(
             DateTimeOffset.FromUnixTimeMilliseconds(tMs).UtcDateTime, ZRH);
-        int wd = (int)z.DayOfWeek;
-        if (wd == 0 || wd == 6) return false;
-        return z.Hour >= 7 && z.Hour < 21;
+        var wd = z.DayOfWeek;
+        return wd != DayOfWeek.Saturday && wd != DayOfWeek.Sunday;
     }
     static bool ShouldFlatten(long tMs)
     {
-        if (!InSession(tMs)) return false;
+        // seule garde horaire : pas de nouvelle sequence vendredi >=21h
+        // Zurich — si une jambe reste coincée a la cloture hebdo, elle
+        // porterait le gap du week-end.
         var z = TimeZoneInfo.ConvertTimeFromUtc(
             DateTimeOffset.FromUnixTimeMilliseconds(tMs).UtcDateTime, ZRH);
-        var close = z.Date.AddHours(21);
-        return (close - z).TotalMilliseconds <= 15 * 60 * 1000;
+        return z.DayOfWeek == DayOfWeek.Friday && z.Hour >= 21;
     }
 
     // ------------------------------------------------------- journal

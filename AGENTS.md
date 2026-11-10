@@ -258,3 +258,23 @@
   avant tout recalibrage/trade via l'engine.
 - Conséquence seuil : un chemin doit détecter ≥ ~+1,2-1,5 $ de net pour
   couvrir l'aller-retour réel à 10K — ddd=0,27 calibré conversion, pas marge.
+
+## Verdict Monte Carlo + corpus réel — économie marge corrigée (10/11/2026)
+- Correction portée PARTOUT : engine eval.rs/exec.rs/exec_settle (35/35
+  tests), poc_engine.py (eval_at + exec_seq), OgTrade.cs.
+- MC falsifiable (mc_realiste, générateur latent cohérent) :
+  sync_control 0 trade ; async 186 tr 100% wr +110$/sess ; lat 0,5→25 ms
+  +111→+106 ; spread x0,5→x2,0 +121→+101. Edge robuste à lat 25 ms ECN.
+- MC conditions cBot réelles (mc_ctrader, lat 350 ms mesurée) :
+  38 tr, 8 aborts (kill IOC protège), 76% wr, +35,6$/sess ; ddd quasi
+  insensible ; lat 5 ms réf +53,5 — la distance coûte ~33% du PnL.
+- Replay corpus RÉEL 31 min (73 881 ticks, replay_recalib.py) :
+  net détecté p99,9 = +0,28 ; 143 evals >0 ; 4 séquences réelles,
+  wr 75%, +1,69$ ; détecté +0,78 → réalisé +0,85 — parité modèle/réel
+  confirmée (le gap -0,8 pré-correction est fermé).
+- Lecture honnête : l'edge existe et le modèle est maintenant juste, mais
+  le feed cTrader retail offre ~4 fenêtres/30 min à 10K (~+0,4$/trade,
+  ~3$/h). La dislocation réelle est ~10x plus fine que celle du générateur.
+- OgTrade.cs : mêmes formules que le Rust (unwind/jambe, comm 2x, liq
+  remplacée). Params jour : ddd=0.27, fresh=8000, cap 1.76, scale 1.10,
+  range 2.08, q_min 0.5, gap 2000, breaker 5, AllowLive=false.

@@ -98,7 +98,7 @@ public partial class OgTrade : Robot
 
     // execution
     bool _busy = false;
-    long _lastSeq = long.MinValue;
+    long _lastSeq = 0;   // 0, pas MinValue : t-MinValue overflowerait -> gate ferme a jamais
     int _consecFail = 0;
 
     StreamWriter _j = null; string _jDay = "";

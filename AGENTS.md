@@ -176,8 +176,13 @@
 - Secrets dans `C:\arb_secrets\ctrader_ultragraph.env` — JAMAIS dans git.
 - systemd prod : `Restart=always` OBLIGATOIRE (breaker sort en exit 0 —
   `on-failure` ne relancerait pas après un blip venue, voir DEPLOY.md §3).
-- cBot OgDetect arrêté le 10/11 (corpus 2-4 nov., ~180 Mo dans
-  `C:\arb_cs_journal\`) — détect-only par construction (aucun ordre).
+- cBot OgDetect (`ctrader_client/cs/`) — détect-only par construction
+  (aucun ordre). Corpus 2-4 nov. ~180 Mo dans `C:\arb_cs_journal\`.
+  ⚠ 10/11 : resynchronisé sur l'économie live — NOTIONAL 10K,
+  `COMM_100K=4,00` → `COMM=comm_usd()=0,40`/jambe (AVANT : formule
+  implicite 100K — à 10K sans ce fix la comm était ×10 trop forte),
+  FreshMs 8000, DddMin 0,27 dans `cs/config.json`. Mêmes lignes
+  journal que le client Rust (ticks + opportunity + system).
 
 ### Paramètres live mesurés sur venue réelle (session 10/11/2026)
 - `NOTIONAL_USD = 10 000` — ddd_min scalé 2,66 → 0,27 $ (×10 vs #87@100K).

@@ -18,7 +18,10 @@
 //   - aucune execution : les opportunites ne sont que mesurees.
 //
 // Parametres declares dans config.json (source-generes : JournalDir,
-// FreshMs, SpreadCap, CommScale, DddMin) — trial #87 du calibrage.
+// FreshMs, SpreadCap, CommScale, DddMin) — economie mesuree 10/11 :
+// COMM=4,00 (fills reels 3,63-4,00), NOTIONAL=10K, FreshMs=8000
+// (send-on-change : derniere quote = etat courant ; p99 gaps 6,1 s),
+// DddMin=0,27 (ddd 2,66@100K scale).
 
 using System.Collections.Generic;
 using System.Globalization;
@@ -40,7 +43,10 @@ public partial class OgDetect : Robot
     };
     static readonly string[] CURR = { "USD","EUR","GBP","JPY","CHF","CAD","AUD","NZD" };
     const int NPAIR = 28, NCURR = 8;
-    const double NOTIONAL = 100_000.0, COMM = 3.00;
+    const double NOTIONAL = 10_000.0;      // USD — parite fees.rs NOTIONAL_USD
+    const double COMM_100K = 4.00;         // USD/100K/cote — max fills reels
+    static readonly double COMM =
+        COMM_100K * NOTIONAL / 100_000.0;  // 0,40 $/jambe = Rust comm_usd()
     const int WARMUP = 100, MED_WIN = 512;
 
     // etat par paire : quote, dernier changement, spreads (mediane fenetree)

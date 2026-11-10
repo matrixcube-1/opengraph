@@ -280,7 +280,7 @@ public class OgTrade : Robot
                 double volBase = (d == 1) ? qty : qty / px;
                 double vol = sym.NormalizeVolumeInUnits(volBase, RoundingMode.Down);
                 if (vol < sym.VolumeInUnitsMin) { why = "vol<min"; aborted = true; break; }
-                var side = (d == 1) ? TradeSide.Sell : TradeSide.Buy;
+                var side = (d == 1) ? TradeType.Sell : TradeType.Buy;
                 double rangePips = MaxRangeBp * 1e-4 * px / sym.PipSize;
                 LogLeg(t0, "leg_send", e, side.ToString(), vol, px);
                 var res = ExecuteMarketRangeOrder(side, sym, vol, rangePips, LABEL);

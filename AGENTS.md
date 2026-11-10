@@ -211,6 +211,17 @@
   R6/R7/Conv-A corrigés, 43 tests `regime_indicators`, FIX incomplet.
   Avertissements toujours valides : recalibrage Convention A + hold-out
   jour futur requis avant tout mode Trade.
+- `cs/OgTrade.cs` (10/11) — cBot EXECUTION réelle : même eval qu'OgDetect
+  + IOC séquentiel `ExecuteMarketRangeOrder` (équiv. LIMIT IOC natif,
+  tol `MaxRangeBp=2,08`), qty aux fills réels, partiel<QMin→abort+unwind,
+  liquidation résiduel en fin de chemin, compte plat exigé (28 symboles),
+  1 séquence à la fois, `MinSeqGapMs=2000`, breaker 5 échecs, flatten
+  Og à 21h-15min ZRH, `AllowLive=false` → refuse tout compte live.
+  Journal `C:\arb_og_trade\` : leg_send/fill/rej, unwind_fill/fail,
+  settle (pnl, filled, unwound, resid_open). NOTA : sur compte marge
+  NETTED chaque jambe = position — la structure chemin = portefeuille
+  de positions, la profit/loss se cristallise à la liquidation des
+  jambes (sémantique identique au settle Rust).
 
 ## Nouveau broker ECN négocié (utilisateur, 02/11/2026) — chemin prioritaire
 - **Commission 2 $ A/R/100 K** (1 $/côté) — vs 3 $/côté IC : économie ~×2

@@ -1,0 +1,762 @@
+A  U  D  I  T    R  E  P  O  R  T
+Scan complet des bugs
+Dépôt matrixcube-1/opengraph
+Système d'arbitrage FX à chemins ouverts — IC Markets (cTrader)
+Cible : github.com/matrixcube-1/opengraph
+Date du scan : 10 novembre 2026
+Périmètre : code Rust + Python + docs + opérations
+Sources : 5 rapports d'audit internes (REVUE_CRITIQUE, CORRECTIONS_LOG,
+AUDIT_OPERATIONNEL, HOLDOUT, RAPPORT_INSAMPLE) + commits GitHub
+Co-auteur : Devin AI (100 % des commits co-signés)
+Document d'audit — diffusion restreinte                                        Édition 1.0
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 1 / 25
+Table des matières
+1. Synthèse exécutive.................................................................................................................................
+1. Synthèse exécutive..............................................................................................................................1
+Verdict consolidé........................................................................................................................1
+Inventaire consolidé par statut...................................................................................................2
+2. Bugs critiques historiques du moteur..................................................................................................2
+2.1 Bug R6 — Directions de chemins fantômes................................................................................3
+Symptôme...................................................................................................................................3
+Cause racine................................................................................................................................3
+Conséquence...............................................................................................................................3
+Fix................................................................................................................................................4
+Vérification..................................................................................................................................4
+2.2 Bug R7 — Fuite d'état inter-trials + quote future.......................................................................4
+Symptôme...................................................................................................................................4
+Chaîne causale (4 maillons)........................................................................................................5
+Résultat.......................................................................................................................................5
+Reproduction chiffrée.................................................................................................................6
+Correctifs appliqués (poc_engine.py).........................................................................................6
+Tests de régression (test_r7.py).................................................................................................6
+Artefacts empoisonnés...............................................................................................................7
+2.3 Bug Convention A — Marquage résiduel au mid au lieu des prix exécutables.......................... 7
+Symptôme...................................................................................................................................8
+Corrigé partout...........................................................................................................................8
+Impact chiffré..............................................................................................................................8
+ Recalibrage requis⚠ .................................................................................................................9
+3. Bugs issus de l'audit externe................................................................................................................9
+3.1 Audit externe OG2 — 5 bugs + 2 défauts....................................................................................9
+3.2 Audit externe cTrader — 13 correctifs (commit 2daaa5a).........................................................9
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 2 / 25
+4. Bugs documentaires (REVUE_CRITIQUE.md).....................................................................................10
+4.1 Findings critiques (5).................................................................................................................10
+C1 — Coût de sortie du résiduel absent (marque mid non réalisable)....................................10
+C2 — Atomicité / risque de jambe non modélisé.....................................................................11
+C3 — Double-comptages résiduels (classe F06).......................................................................11
+C4 — Chaîne de calibration invalide en l'état...........................................................................12
+C5 — La simulation Monte Carlo ne prouve pas ce qu'elle prétend........................................13
+4.2 Findings majeurs (6)..................................................................................................................14
+4.3 Findings mineurs (i1-i17)...........................................................................................................14
+5. Bugs opérationnels............................................................................................................................14
+5.1 Incident de pollution de données (30 octobre 2026)...............................................................14
+Symptôme.................................................................................................................................15
+Impact.......................................................................................................................................15
+Conséquences classées.............................................................................................................15
+Règle ajoutée............................................................................................................................16
+5.2 Sécurité SSH non durcie (vérifié 06/11)....................................................................................16
+5.3 Mo7 — Écart POC/live (choix de conception assumé)..............................................................17
+5.4 Épisode week-end de ~51 h......................................................................................................17
+5.5 systemd — Restart=always obligatoire.....................................................................................17
+6. Bugs et limitations encore ouverts....................................................................................................18
+6.1 Calibrage cTrader réel non validé..............................................................................................18
+6.2 Recalibrage Convention A stricte requis...................................................................................18
+6.3 Échantillon holdout mince.........................................................................................................18
+6.4 Couche sizing absente (HiGHS/Kelly/ES)...................................................................................19
+6.5 Hawkes MLE / p_persist............................................................................................................19
+6.6 Porte à hystérésis non activée..................................................................................................20
+6.7 FIX 4.4 incomplet.......................................................................................................................20
+6.8 Métaux en stand-by..................................................................................................................20
+6.9 Synchronisation inter-symboles (E3).........................................................................................21
+6.10 Calendrier annonces (règle 9).................................................................................................21
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 3 / 25
+6.11 p_an / LGD...............................................................................................................................21
+7. Recommandations prioritaires..........................................................................................................21
+7.1 Avant tout passage en live trading............................................................................................22
+7.2 Gouvernance du code agentique..............................................................................................22
+7.3 Confidentialité...........................................................................................................................23
+8. Verdict consolidé................................................................................................................................24
+8.1 Bon signe — maturité de la traçabilité......................................................................................24
+8.2 Mauvais signe — bugs profondément révélateurs...................................................................24
+8.3 Risque résiduel principal...........................................................................................................25
+8.4 Statut global au 10 novembre 2026..........................................................................................25
+8.5 Recommandation finale............................................................................................................25
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 4 / 25
+1. Synthèse exécutive
+Le dépôt matrixcube-1/opengraph est un système d'arbitrage FX à chemins ouverts implémenté 
+en Rust (60,5 %) et Python (37,5 %), avec un adapter cTrader et un adapter FIX 4.4 en cours. Le projet 
+pratique  une  honnêteté  documentaire  remarquable  :  cinq  rapports  d'audit  internes  
+(REVUE_CRITIQUE,  CORRECTIONS_LOG,  AUDIT_OPERATIONNEL,  HOLDOUT_2026-10-27,  
+RAPPORT_INSAMPLE) détaillent chaque bug avec cause racine, symptôme, chaîne causale, correctif,  
+tests de régression et artefacts empoisonnés archivés.
+Cependant, trois bugs historiques majeurs (R6, R7, Convention A) ont tous gonflé artificiellement 
+le P&L du système — le pattern classique d'un agent IA (Devin AI, co-auteur de 100 % des commits) qui 
+« a l'air de comprendre » sans comprendre, et qui produit du code qui a l'air de marcher parce que les 
+chiffres sont positifs. Chaque bug n'a été détecté que par un audit externe ultérieur, jamais par les  
+tests unitaires en place.
+Verdict consolidé
+• Rigueur de traçabilité exceptionnelle pour le genre (5 rapports d'audit, invariants non 
+négociables numérotés, artefacts empoisonnés archivés).
+• Bugs critiques historiques (R6, R7, Convention A) ont tous gonflé le P&L — pattern 
+caractéristique d'erreurs subtiles d'agent IA.
+• Cycle « Devin génère → audit externe → Devin corrige » fonctionne mais n'est pas systématique 
+avant chaque commit.
+• Aucun commit n'est signé par matrixcube-1 seul — impossible de distinguer le code revu à la 
+main du code poussé directement.
+• Recalibrage sous Convention A stricte encore requis avant tout mode trade (le calibrage Optuna 
+actuel s'est fait sous marquage mid, donc optimiste).
+• Hold-out sur jour futur complet reste bloquant pour le déploiement des paramètres calibrés sur 
+corpus cTrader réel.
+Inventaire consolidé par statut
+ID Bug Statut Sévérité Localisation
+R6 Directions de chemins 
+fantômes (DFS sans nœud de 
+départ)
+Corrigé Critique poc_engine.py / enum_paths
+R7 Fuite d'état inter-trials + quote 
+future (P&L fantôme 10,5 M$)
+Corrigé Critique poc_engine.py / objective_factory
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 5 / 25
+ID Bug Statut Sévérité Localisation
+Conv
+-A
+Marquage résiduel au mid au 
+lieu des prix exécutables
+Corrigé 
+code, 
+recalibrage 
+requis
+Critique engine + poc_engine 
+(eval/exec_seq/exec_settle)
+R4 ddd_exec en notation pseudo-
+code (JPY : 0,0067 vs 100 000)
+Corrigé Majeur Constitution p.65 + Document 
+scellé p.54
+MC mc_sim.py : 3 bugs (latence, 
+diffusion, commission flat)
+Corrigé Majeur audit/mc_sim.py
+A/B Engine::ingest acceptait quotes 
+croisées/NaN + data.rs littéraux 
+NaN
+Corrigé Majeur engine/src/ingest + data.rs
+OG2 5 bugs + 2 défauts (audit 
+externe OG2)
+Corrigés Majeur ctrader_client + engine
+Audi
+t1
+13 correctifs 
+(C2/C4/M5/M6/Mo1-Mo5/Mo8
+/M7/m3)
+Corrigés Majeur ctrader_client (commit 2daaa5a)
+C1 Coût de sortie du résiduel 
+absent de la règle d'envoi
+Corrigé via 
+Conv-A
+Critique 
+doc
+REVUE_CRITIQUE §I.C1
+C2 Atomicité / risque de jambe 
+non modélisé
+Corrigé 
+(Addendu
+m R2 E1-
+E9)
+Critique 
+doc
+REVUE_CRITIQUE §I.C2
+C3 Double-comptages résiduels 
+(impact + spread bout + r(e))
+Corrigé Critique 
+doc
+Constitution + Document scellé 
+(CORRECTIONS_LOG R1)
+C4 Chaîne de calibration invalide 
+(Dukascopy ≠ IC Markets)
+Partiel Critique 
+doc
+REVUE_CRITIQUE §I.C4 + Annexe J
+C5 Simulation Monte Carlo 
+tautologies + faux positifs non 
+testés
+Partiel Majeur REVUE_CRITIQUE §I.C5
+M1 Conflit d'autorité Constitution 
+vs Document scellé
+Partiel Majeur REVUE_CRITIQUE §III.M1
+M2 Facteur FX parasite dans 
+coût_bout / P_S
+Corrigé Majeur Constitution p.12,31 + Scellé 
+p.7,25,49
+M3 Fenêtre annonce 10 s non 
+opérationnalisable
+Non corrigé Majeur REVUE_CRITIQUE §III.M3 (bloqué 
+source externe)
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 6 / 25
+ID Bug Statut Sévérité Localisation
+M4 Hawkes : sémantique 
+résorption mal définie + h 
+polysémique
+Ouvert Majeur REVUE_CRITIQUE §III.M4 (M4 
+dans la roadmap)
+M5 Règle d'envoi incomplète 
+(p_persist omis, circularité, γ 
+inerte)
+Partiel Majeur REVUE_CRITIQUE §III.M5
+M6 Viabilité économique non 
+établie (edge 30 USD non 
+sourcé, μ Kelly absent)
+Ouvert Majeur REVUE_CRITIQUE §III.M6
+i1-
+i17
+17 bugs mineurs (règle 1 
+obsolète, v2.1 vs v2.3, DST 
+US/UE, etc.)
+La plupart 
+corrigés
+Mineur REVUE_CRITIQUE §IV
+Ops-
+1
+Pollution de données 30/10 
+(fetch_poc.py rebouclait)
+Corrigé + 
+règle 
+ajoutée
+Opératio
+nnel
+fetch_poc.py + CSV /opt/arb/data
+Ops-
+2
+Sécurité SSH non durcie 
+(PasswordAuth yes + 
+PermitRootLogin yes)
+Non corrigé Opératio
+nnel
+Serveur Vultr 104.238.181.77
+Ops-
+3
+Mo7 — Écart POC/live 
+(échantillonnage 500 ms vs tick-
+à-tick)
+Choix 
+assumé
+Opératio
+nnel
+audit/AGENTS.md Mo7
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 7 / 25
+2. Bugs critiques historiques du moteur
+Cette section détaille les trois bugs moteurs les plus graves — ceux qui ont produit du P&L  
+fantôme et auraient pu passer en production sans l'audit externe. Tous ont en commun d'être des  
+erreurs de logique subtiles, indétectables par les tests unitaires en place, et de gonfler artificiellement 
+les résultats.
+2.1 Bug R6 — Directions de chemins fantômes
+Symptôme
+Détecté sur cand.npz : 702 701 candidats net>0 (96 % des evals) avec max net = 23 293 396 USD 
+— économiquement absurde pour un système d'arbitrage FX retail.
+Cause racine
+enum_paths ne conservait pas le nœud de départ du DFS. _vectorize et exec_seq supposaient  
+que chaque chemin part de la base de sa 1ère arête — faux pour 5 196 chemins (50,2 %) dont le DFS  
+part du côté quote.
+Conséquence
+Jambes partant d'un nœud non incident à l'arête → d=-1 silencieux → transitions fantômes (ex.  
+JPY→USD « via » USDCHF à 1/ask) → produits absurdiment grands. Exemple : chemin π 3425 (vrai  
+chemin JPY→USD→CHF→EUR) évalué à ~23,4 M$.
+Fix
+enum_paths retourne désormais (paths, starts) ; P_S et la marche de _vectorize, ainsi que start  
+d'exec_seq, utilisent le vrai nœud de départ du DFS.
+Vérification
+• 0 transition fantôme sur les 10 360 chemins après correction.
+• π 3425 = JPY→USD→CHF→EUR (vrai chemin) après correction.
+• Artefacts invalides conservés pour audit : cand.npz.buggy_r1, optuna.db.buggy_r1.
+2.2 Bug R7 — Fuite d'état inter-trials + quote future
+Symptôme
+Trials Optuna ≥1 affichaient ~262 $/trade constant → objectif 0,4–28,5 M$ incompatibles avec le 
+scan (max 119,76 $). Baseline honnête (eng frais) : 436 k$.
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 8 / 25
+Chaîne causale (4 maillons)
+• objective_factory partage un seul Engine entre tous les trials.
+• _advance (self.pos) ne pouvait qu'avancer — jamais remonter. Au replay du jour 22 après le jour 
+23 (trial ≥1), les curseurs restaient en fin de données → état « figé » fin jour 26 exposé pour 
+tout le jour 22.
+• tick/sync posaient la quote même quand ts[j] > t (quote future).
+• Fraîcheur unilatérale (t - last_t <= fresh_ms) : last_t futur → passe.
+Résultat
+Évaluations fantômes ; exec_seq remplissait les jambes aux vraies quotes (quote_at stateless)  
+mais marquait les résidus via usd_price figé → biais de marquage systématique ~+0,26 % → 262  
+$/trade.
+Reproduction chiffrée
+mêmes params T1 sur eng frais → 58 484 $ (j22+j23) vs 10 520 804 $ en DB (ratio 
+~180×) Intermediates T1 : j22 live = 6 680 852 $ vs 57 750 $ rejoué
+Correctifs appliqués (poc_engine.py)
+• _advance : rembobinage par searchsorted quand pos est en avance sur t.
+• tick/sync : quote exposée seulement si j >= 0 and ts[j] <= t, sinon NaN.
+• eval_at : fraîcheur bilatérale (last_t <= t) & (t - last_t <= fresh_ms).
+Tests de régression (test_r7.py)
+• T1 : pas de quote future (AUDCHF 1er tick +4h).
+• T2 : chemin sans donnée non sélectionnable.
+• T3 : quote futur+500ms rejetée.
+• T4 : rembobinage j23→j22 re-expose les vrais ticks.
+• T5 : eval nominale inchangée.
+• T6 : rejouabilité j22|j23|j22 sur même eng → identique.
+Artefacts empoisonnés
+optuna.db (trials T1+) archivé sous buggy_r2, non supprimé — conservé pour piste d'audit.
+2.3 Bug Convention A — Marquage résiduel au mid au lieu des prix 
+exécutables
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 9 / 25
+Symptôme
+Les +955 $ du holdout 26/10 étaient un artefact comptable. L'audit externe a prouvé que le  
+marquage résiduel était au mid (usd_price), pas aux prix exécutables (bid/ask de liquidation).
+Corrigé partout
+• _usd_liq dans poc_engine.py.
+• usd_liq_price / usd_liq_comm dans engine (eval, exec_seq, exec_settle, usd_marks).
+• La devise terminale est désormais valorisée à la liquidation exécutable (bid/ask de sa paire USD) 
++ commission de liquidation.
+Impact chiffré
+Rejeu #87 holdout 26/10 :   sous mid         : +954,76 $   sous Conv. A     : +61,58 
+$  / 12 trades / 0 abort   écart            : -893,18 $  (artifact comptable éliminé)
+ Recalibrage requis⚠
+Les paramètres #87 sont indicatifs : la calibration Optuna s'est faite sous marquage mid. Un  
+recalibrage complet sous Convention A stricte est requis avant tout mode trade — sans cela, le  
+système resterait optimiste.
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 10 / 25
+3. Bugs issus de l'audit externe
+Deux vagues d'audit externe ont révélé un total de 18 bugs (OG2 : 5+2, et Audit1 : 13 correctifs  
+C/M/Mo/m). Tous ont été corrigés par Devin AI dans les commits a7998a6 (2 nov.) et 2daaa5a (1 nov. 
+2026).
+3.1 Audit externe OG2 — 5 bugs + 2 défauts
+Correctifs documentés dans audit/test_og2.py (commit a7998a6, 2 nov. 2026, « correctifs audit 
+OG2 (matrixcube-1, commit dc3b3bd) : 5 bugs + 2 défauts »).
+ID Bug Statut Sévérité Localisation
+C2 Résiduel non liquidé 
+immédiatement après Done
+Corrigé Majeur ctrader_client — file d'unwind
+C3 start_qty/exec_settle faisaient 
+sync(t0) en live
+Corrigé Majeur bindings pybind (sync explicite 
+replay only)
+C4 Flatten dédupliqué + fills 
+orphelins non débouclés
+Corrigé Majeur exec.rs — unwind_coverage / 
+uncovered_job
+m1 skip _net0 < ddd_min (borne 
+fausse) supprimé
+Corrigé Mineur poc_engine.py
+m2 Médiane de spread = in-sample 
+seul (MED_CUTOFF)
+Corrigé Mineur poc_engine.py
+m3 q_min non câblé + 
+symbolName ne tolérait pas « 
+EUR/USD »
+Corrigé Mineur ctrader_client
+3.2 Audit externe cTrader — 13 correctifs (commit 2daaa5a)
+Correctifs complets C1-C4, M1-M8, Mo1-Mo8, m1-m5 sur le client cTrader (commit 2daaa5a, 1  
+nov. 2026, « Audit externe : correctifs complets »).
+ID Bug Statut Sévérité Localisation
+C2 Résiduel liquidé 
+immédiatement après Done
+Corrigé Critique ctrader_client — file d'unwind
+C4 Flatten dédupliqué + fills 
+orphelins débouclés + 
+repompage filet
+Corrigé Critique exec.rs (unwind_coverage / 
+uncovered_job)
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 11 / 25
+ID Bug Statut Sévérité Localisation
+M5 Baseline reconcile exigée + 
+divergence → halt
+Corrigé Majeur ctrader_client
+M6 Retry débouclage ×5 Corrigé Majeur ctrader_client
+Mo1 events 2147/2164 → Dead, 
+2172 → halt, watchdog spots 
+30 s
+Corrigé Majeur ctrader_client
+Mo2 RPC vérifie payloadType Corrigé Mineur ctrader_client
+Mo3 Warm-up 100 ticks/symbole Corrigé Mineur ctrader_client
+Mo4 Breaker sur échecs consécutifs Corrigé Majeur ctrader_client
+Mo5 Partiels OrderError comptés Corrigé Mineur ctrader_client
+Mo8 deal.commission journalisée Corrigé Mineur ctrader_client
+M7 IOC_TOL = 2,08 bp (3×τ) — 
+limite à la touche tuait 351 IOC 
+à 1 ms
+Corrigé Critique ctrader_client
+m3 q_min câblé + symbolName 
+tolère « EUR/USD »
+Corrigé Mineur ctrader_client
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 12 / 25
+4. Bugs documentaires (REVUE_CRITIQUE.md)
+Audit indépendant du 25 octobre 2026 sur les 4 documents canoniques (Constitution v2.2 79 p., 
+Document scellé 69 p., Disponibilité Ticks Dukascopy 6 p., Simulation Monte-Carlo 6 p.). Méthode :  
+lecture  intégrale  +  vérifications  indépendantes  (énumération  DFS  recodée  de  zéro,  recalcul  des 
+formules, spot-checks croisés).
+4.1 Findings critiques (5)
+C1 — Coût de sortie du résiduel absent (marque mid non réalisable)
+DDD = S × P_arrivée − P_départ avec P = mid de marquage, alors que les jambes sont aux prix  
+exécutables. Le résiduel est marqué à un prix non exécutable : chaque arrivée est gonflée de ≈ ½-
+spread de sa devise/paire (~0,5–4 USD/100k).
+Coût_total (§8.3) = entrée + portage + base + conversion + div/roll — aucune provision de sortie. 
+Le seul aveu : D-10 (coûts de sortie manquants de l'optimal stopping), jamais reporté sur la règle  
+d'envoi.
+Conséquence : « ENVOYER  DDD_eff > Coût_total » compare une marque mid à des coûts⇔  
+d'entrée. Le vrai break-even ≈ +1 jambe de coût (~7,3 USD) + ½-spread de marquage — soit quasiment 
+tout le net canonique 8,07 USD.
+Statut : corrigé via Convention A stricte (liquidation exécutable). Voir bug 2.3.
+C2 — Atomicité / risque de jambe non modélisé
+« Exécution quasi simultanée » posée (§1) mais aucune des 38 règles ne borne l'écart entre fills, 
+ne traite le fill partiel/rejet (requote,  last-look)  ni ne spécifie un repli (unwind, timeout, hedge  
+d'urgence).
+Corollaire : pas de fraîcheur par jambe dans la règle d'envoi — des ticks asynchrones peuvent  
+fabriquer un DDD fantôme (classe de bugs connue, cf. expérience Spread Arbitrage de l'utilisateur).
+Statut : corrigé via Addendum R2 (règles E1-E9) + implémentation exec_seq.
+C3 — Double-comptages résiduels (classe F06)
+• Impact compté deux fois : DDD_eff = DDD_th − ησQ√L (§7.2) ET Coût_total inclut Glissement 
+défini explicitement comme Impact ησQ√L (Tableau 8.4). Le pseudo-code reproduit le bug. Net 
+faussé de 2×ησQ√L.
+• Spread du bout compté deux fois en Convention A : Coût_bout (spread CFD) dans Coût_total 
+inconditionnellement, alors que « le DDD d'un bout CFD inclut le spread » (§7.1).
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 13 / 25
+• Ambiguïté r(e) : défini « taux exécutable net de frais » (§0) — si littéral, les commissions du 
+Coût_total sont double-comptées.
+Statut : corrigé (r(e) → « taux exécutable bid/ask brut » ; Glissement → « résiduel mesuré, ne  
+pas recompter l'impact déjà dans DDD_eff » ; Coût_bout → « conv. A : frais seuls — spread dans DDD 
+»).
+C4 — Chaîne de calibration invalide en l'état
+• Proxy venue : Dukascopy = feed ECN ≠ prix exécutables IC Markets Raw. Ce qui ne transfère 
+pas : spreads exécutables, fréquence/durée des incohérences internes, slippage, latence.
+• Résolution : échantillon principal prévu en barres M5 OHLC — insuffisant pour une décision ~50 
+ms. dukascopy-node -t tick fournit ms mais protocole de synchronisation inter-symboles 
+toujours à spécifier.
+• Synchronisation : reconstituer des états simultanés exécutables sur 28 paires + bouts depuis des 
+fichiers .bi5 asynchrones = protocole d'alignement non spécifié → risque de désalignements 
+artificiels (faux signaux).
+• CME : aucune source (Databento/DataMine cités sans audit) → la moitié du dual-venue n'est 
+pas calibrable.
+Statut : partiellement mitigé (ticks ms via fetch_poc.py) mais la synchronisation inter-symboles 
+reste un point ouvert critique (E3 dans AUDIT_OPERATIONNEL).
+C5 — La simulation Monte Carlo ne prouve pas ce qu'elle prétend
+• Tautologies : 11 « contrôles analytiques » invérifiables-faux-par-construction (Score≡DDD = 
+même expression ; « 30>21,93→True » teste > ; « identité exacte » code vs lui-même).
+• Faux positifs jamais testés : send rate 0,000 % hors edge_injected — le filtre n'est éprouvé que 
+sur des edges injectés (circulaire).
+• P(net<0|sent)=0,00 % est mécanique (un chemin envoyé a par construction DDD>coût sur les 
+mêmes prix).
+• Mean net (tous) = −4,20 = moyenne contrefactuelle du meilleur chemin — non défini, présenté 
+comme un P&L.
+• chemins = 3 108 vs 3 112 attendu — convention défendable mais non documentée et différente 
+du dénombrement scellé.
+• Écart send rate A (0,5667 %) vs B (0,6083 %) ~7 % relatif non expliqué → suggère asymétrie 
+demi-spread/spread complet — précisément le piège F06.
+• Manquent : risque de jambe, latence, coût de sortie, granularité CME, Hawkes dynamique (λ 
+constant), filtrage effectif de p_persist.
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 14 / 25
+Statut  :  partiel  —  la  MC  reste  un  exercice  de  cohérence  interne,  pas  une  validation 
+économique.  Piste  :  générateur  avec  incohérences  temporelles  et  bruit  non  triangulairement 
+cohérent + test d'équivalence A↔B.
+4.2 Findings majeurs (6)
+ID Bug Statut Sévérité Localisation
+M1 Conflit d'autorité Constitution 
+vs Document scellé + dérivation 
+non déclarée + codes C15-C31 
+cités 12× mais définis nulle part
+Partiel Majeur Constitution v2.2 + Document 
+scellé (corrections R1 appliquées)
+M2 Formule normative erronée : 
+facteur FX parasite dans 
+coût_bout et P_S (JP225 → 0,07 
+USD si appliqué littéralement)
+Corrigé Majeur Constitution p.12,31 + Scellé 
+p.7,25,49 (CORRECTIONS_LOG R1)
+M3 Fenêtre annonce 10 s non 
+opérationnalisable (source, 
+périmètre, sens non définis ; 10 
+s insuffisant pour NFP/CPI)
+Non corrigé Majeur Constitution §8.5,§17 (R9) — 
+bloqué source externe
+M4 Hawkes : chocs mid vs chocs 
+DDD ≠ même processus ; S(h) 
+deux rôles incompatibles ; 
+Ĥ>0,55 aveugle au signe ; h 
+polysémique (3 quantités, 1 
+symbole)
+Ouvert Majeur Constitution §10.3,§17 — M4 
+dans la roadmap
+M5 Règle d'envoi incomplète : 
+p_persist omis du 
+biconditionnel ; circularité 
+marge post-dim ; γ=10 inerte FX 
+; spread cap dérivé d'1 point
+Partiel Majeur Constitution §8.5,§17
+M6 Viabilité économique non 
+établie : edge 30 USD non 
+sourcé ; μ Kelly absent (LP 
+infaisable si μ<0) ; pas de stop 
+par trade ; corrélation chemins 
+non bornée
+Ouvert Majeur Constitution §12,§17
+4.3 Findings mineurs (i1-i17)
+17 bugs mineurs identifiés — la plupart corrigés via les rounds R1-R4 (CORRECTIONS_LOG.md).  
+Détail complet dans REVUE_CRITIQUE.md §IV.
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 15 / 25
+ID Bug Statut Sévérité Localisation
+i1 Règle 1 « Dix CFD » obsolète vs 
+règle 28 « 34 bouts »
+Corrigé Mineur Const. l.3495 vs l.3607
+i2 §5.4 « activation v2.1 » vs « 
+v2.3 » partout ailleurs
+Corrigé Mineur Const. l.2274 vs l.52, l.4273
+i3 Annexe A : règle d'envoi et 
+Coût_total incomplets vs v2.2
+Corrigé R2 Mineur Const. l.4420-4425
+i4 17:00 NY = 00:00 serveur « 
+toute l'année » faux ~4 
+sem/ans (DST US ≠ UE)
+Corrigé R2 Mineur Const. §11.1 l.3056
+i5 Pseudo-code : rollover non 
+testé FX pur ; commission 3,50 
+hardcodée ; conv. B non 
+implémentée
+Partiel Mineur Const. Annexe F
+i6 DP sur (nœud,k) n'impose pas 
+simplicité des chemins
+Documenté Mineur Const. §6.1, règle 19
+i7 Borne S=0,30 : « < » vs « > » vs 
+« ≤ » — 3 inégalités différentes
+Corrigé R1 Mineur Const. l.3048, l.2709, l.5333
+i8 p_h = 1 − (1 − p_an)h sans 
+exposant (2 occ.) ; e−λh ; net 4 
+jambes 11,78 vs 11,74
+Corrigé Mineur Scellé l.4573, l.4145, l.2570, T.8.6
+i9 Règle 37 « plafond messages » 
+= « À fixer » — invérifiable
+Ouvert Mineur Const. §17, §18.5
+i10 Kelly : pas de clamp μ<0 ni 
+garde σ²→0
+Ouvert Mineur Const. §12
+i11 4e jambe « marginale CME » 
+(+11,78) et « nulle OTC » 
+(+0,76) — choix politique, pas 
+calcul
+Documenté Mineur T.8.3, T.8.6, règle 4
+i12 Variante impact 
+η σ√(Q/V_day) : unité non ′
+spécifiée
+Ouvert Mineur Const. §12
+i13 S(h) = exp(−∫λ) avec λ Hawkes 
+stochastique : approximation 
+non discutée
+Ouvert Mineur Const. §10.1
+i14 XAUJPY < 4 ans — asymétrie 
+d'échantillon Optuna
+Documenté Mineur Annexe J
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 16 / 25
+ID Bug Statut Sévérité Localisation
+i15 Survivorship catalogue ; 
+volumes .bi5 (pseudo-BIR) 
+inexploités ; qualité par séance 
+non auditée
+Ouvert Mineur Doc Dukascopy
+i16 « Graphe G10 » pour 8 devises ; 
+datation uniforme « Octobre 
+2026 »
+Documenté Mineur Dukascopy p.1, T.B.1
+i17 R10 « max-de-bruit ≠ signal » : 
+non opérationnalisable
+Ouvert Mineur Const. §16
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 17 / 25
+5. Bugs opérationnels
+5.1 Incident de pollution de données (30 octobre 2026)
+Symptôme
+Un processus fetch_poc.py lancé le 27/10 restait actif dans le tarpit WAF, rebouclait ses repasses 
+et réécrivait les CSV des 3 jours POC (317 fichiers entre 13 h et ~19 h UTC).
+Impact
+Un run lisant un fichier à mi-écriture voyait une heure tronquée → état moteur divergent →  
+argmax d'eval différent au même t. Preuve : GBPUSD/−3.73 vs AUDJPY/−2.66 à t=1792724877113,  
+comptes de ticks différant de 17 104.
+Conséquences classées
+• Valables : écarts appariés (0 flip, PnL bit-identique), mesures temporelles (ns), runs antérieurs 
+au 30/10 13 h.
+• Suspects : exec counts et PnL globaux des runs du 30/10 ≥13 h, incluant anomalies d'execs de la 
+grille D.
+• Action : re-validation des chiffres clés sur données gelées (ladder7).
+Règle ajoutée
+Un seul downloader à la fois — et aucun run d'analyse pendant qu'un fetcher écrit dans  
+/opt/arb/data.
+5.2 Sécurité SSH non durcie (vérifié 06/11)
+Le durcissement documenté n'est PAS appliqué sur la box Vultr prod (root@104.238.181.77,  
+Silicon Valley, 4 vCPU, 7,4 Go RAM, 130 Go libres, Ubuntu) :
+• 00-arb-hardening.conf absent.
+• 50-cloud-init.conf → PasswordAuthentication yes + PermitRootLogin yes.
+• Accès root par mot de passe fonctionne.
+• Clé ~/.ssh/id_ed25519 installée mais arb_ed25519 refusée (Permission denied, 06/11).
+À durcir URGEMMENT avant prod : désactiver le mot de passe une fois la clé confirmée.
+5.3 Mo7 — Écart POC/live (choix de conception assumé)
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 18 / 25
+Le POC n'évalue que des instants échantillonnés (move_gate 0,25 / eval_every 500 ms) ; le live  
+évalue à chaque tick — l'ensemble des trades différera, la fréquence detect est indicative seulement.
+Statut : choix de conception documenté, non corrigé. À garder en tête pour l'interprétation des 
+fréquences détectées.
+5.4 Épisode week-end de ~51 h
+Forward-fill à travers le week-end (ven→lun) — filtré au rapport (durs > 3 600 s = artefact), jamais 
+interprété comme persistance réelle. Mais c'est un piège potentiel en live si la garde de fraîcheur est  
+mal configurée.
+5.5 systemd — Restart=always obligatoire
+Le  circuit  breaker  sort  en  exit  0  —  on-failure  ne  relancerait  pas  après  un  blip  venue. 
+Restart=always est OBLIGATOIRE en prod (commit dab6247, 6 nov. 2026).
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 19 / 25
+6. Bugs et limitations encore ouverts
+Liste des points non encore résolus au 10 novembre 2026 — à traiter avant tout déploiement en 
+mode trade réel.
+6.1 Calibrage cTrader réel non validé
+Corpus  2-4  nov.  «  brûlé  »  par  la  calibration  Optuna.  Params  fresh=985,  cap=2.19, 
+ddd_min=11.8, tau=1.23 — hold-out sur jour futur complet requis avant déploiement.
+6.2 Recalibrage Convention A stricte requis
+La  calibration  Optuna  s'est  faite  sous  marquage  mid.  Les  params  #87  sont  indicatifs. 
+Recalibrage sous usd_liq (prix exécutables) requis avant tout mode trade.
+6.3 Échantillon holdout mince
+6 execs le 27/10 sous ddd_min=2.5 (vs 134 sous ddd_min=0). Robesse du plateau à confirmer sur 
+plus de sessions.
+6.4 Couche sizing absente (HiGHS/Kelly/ES)
+• Estimation μ_USD/σ²_USD par chemin non définie.
+• x_max < 0 si μ < 0 → LP infaisable (pas de clamp).
+• σ²→0 → explosion (pas de garde).
+• 2 072 chemins épars → pooling hiérarchique par jambes requis.
+• t_free sérialise → une seule position à la fois → le sizing multi-chemins n'a rien à allouer tant 
+que la concurrence n'est pas autorisée.
+6.5 Hawkes MLE / p_persist
+Sémantique à finaliser (M4 dans la roadmap). Épisodes déjà exportés (cand.npz), MLE à écrire.
+6.6 Porte à hystérésis non activée
+Implémentée + testée (43 tests crate regime_indicators), non activée sur le déclenchement. Coût 
+d'opportunité mesuré : elle fermerait sur haute tension = jours de récolte. Disponible comme overlay 
+de risque.
+6.7 FIX 4.4 incomplet
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 20 / 25
+• Codec + session + market data V/W/X top-of-book faits (18 tests).
+• Reste : transport TLS + ordres IOC + ExecutionReport (attente spec venue + creds UAT).
+6.8 Métaux en stand-by
+Sauts métal intérieurs (XAU/XAG) implémentés dans le POC (mixed=True) mais désactivés :  
+croisés XAUEUR/JPY/GBP/CHF/AUD peu liquides (3-5× moins de ticks, quote toutes 400-970 ms vs  
+100-150 ms XAUUSD/XAGUSD, spreads plus larges) → prix vraisemblablement synthétiques ; edge  
+détecté = retard de quote, pas exécutable.
+6.9 Synchronisation inter-symboles (E3)
+Protocole d'alignement de ticks asynchrones (condition d'existence de tout DDD) — toujours à  
+spécifier selon AUDIT_OPERATIONNEL.md §2. C'est le goulot critique avant toute calibration fiable.
+6.10 Calendrier annonces (règle 9)
+Source non définie — filtre invérifiable en simulation. 10 s insuffisant pour un repricing macro  
+(NFP, CPI).
+6.11 p_an / LGD
+Source externe pour IC Markets (notation/compte ségrégué) requise pour bouts CFD — non  
+fournie.
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 21 / 25
+7. Recommandations prioritaires
+7.1 Avant tout passage en live trading
+• Recalibrer sous Convention A stricte (le calibrage actuel est sous marquage mid, donc 
+optimiste).
+• Hold-out jour futur complet sur corpus cTrader réel — bloquant pour déploiement.
+• Audit externe obligatoire avant tout commit touchant engine/, ctrader_client/, ou les formules 
+de calibrage.
+• Durcir SSH avant prod (PasswordAuth no, PermitRootLogin no).
+• Spécifier la synchronisation inter-symboles (E3) — actuellement un point ouvert critique.
+• Évaluer les faux positifs du filtre (C5) — la MC actuelle ne teste que des edges injectés, pas le 
+bruit réel.
+7.2 Gouvernance du code agentique
+• Imposer qu'aucun commit co-écrit avec Devin ne soit fusionné sans revue humaine explicite 
+signée (commit verification GPG ou PR approval obligatoire).
+• Logger les sessions Devin — conserver un journal des prompts/sessions Devin pour auditabilité 
+(actuellement seul le résultat final est visible dans les commits).
+• Diversifier les outils : utiliser Devin pour le scaffolding et les tâches mécaniques, mais garder le 
+cœur métier (moteur de calcul, calibrage, exécution) en revue humaine stricte.
+• Mettre en place un audit tiers annuel sur les performances affichées (61 µs p99, 57 k t/s, +49,6 
+k$ sont auto-rapportées).
+7.3 Confidentialité
+• Évaluer la classification de confidentialité : la méthodologie « scellée » traitée par un service 
+tiers US (Cognition AI Labs / Devin AI) est-elle compatible avec la politique de propriété 
+intellectuelle revendiquée ?
+• Corriger l'incohérence README « Dépôt privé — propriété exclusive » vs visibilité publique 
+GitHub réelle (soit passer le dépôt en privé, soit retirer les PDFs scellés et l'étiquette 
+confidentielle).
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 22 / 25
+8. Verdict consolidé
+8.1 Bon signe — maturité de la traçabilité
+Le projet pratique une honnêteté documentaire exceptionnelle : 5 rapports d'audit internes  
+détaillent chaque bug avec cause racine, symptôme, chaîne causale, fix, tests de régression, et  
+artefacts empoisonnés archivés. Verbatim de la REVUE_CRITIQUE : « Corpus d'une rigueur et d'une  
+traçabilité exceptionnelles pour le genre. »
+8.2 Mauvais signe — bugs profondément révélateurs
+Les  bugs  R6,  R7  et  Convention  A  sont  des  erreurs  de  logique  subtile  que  seul  un  audit 
+indépendant pouvait détecter :
+• R6 : un DFS qui ne conserve pas le nœud de départ → 50 % des chemins évalués avec la 
+mauvaise direction → P&L fantôme jusqu'à 23 M$.
+• R7 : un moteur qui ne rembobine pas entre trials → curseur figé en fin de données → quote 
+future exposée → P&L fantôme de 10,5 M$.
+• Convention A : marquage au mid au lieu des prix exécutables → holdout gonflé de +955 $ à 
++61,58 $ une fois corrigé.
+Ces 3 bugs ont tous gonflé artificiellement le P&L. C'est le pattern classique d'un agent IA qui « a 
+l'air de comprendre » sans comprendre — et qui produit du code qui a l'air de marcher parce que les  
+chiffres sont positifs.
+8.3 Risque résiduel principal
+Le cycle « Devin génère → audit externe → Devin corrige » fonctionne, mais :
+• Chaque audit a révélé des bugs critiques qui auraient pu passer en prod sans lui.
+• Les audits ne sont pas systématiques avant chaque commit.
+• Aucun commit n'est signé par matrixcube-1 seul → impossible de distinguer le code revu à la 
+main du code poussé directement par Devin.
+8.4 Statut global au 10 novembre 2026
+ID Bug Statut Sévérité Localisation
+— Bugs critiques moteur (R6, R7, 
+Conv-A)
+3 corrigés, 
+1 
+recalibrage 
+requis
+Critique Code + calibration
+Audit matrixcube-1/opengraph — 10 nov. 2026
+Scan bugs — opengraph — page 23 / 25
+ID Bug Statut Sévérité Localisation
+— Bugs audit externe (OG2 + 
+Audit1)
+18 corrigés Majeur ctrader_client + engine
+— Bugs documentaires (C1-C5, 
+M1-M6, i1-i17)
+≈28 
+corrigés, 6 
+ouverts
+Mixte Constitution + Document scellé
+— Bugs opérationnels (pollution, 
+SSH, Mo7, week-end, systemd)
+3 corrigés, 
+2 ouverts
+Opératio
+nnel
+Serveur + POC
+— Limitations ouvertes (holdout, 
+sizing, FIX 4.4, etc.)
+11 ouvertes Bloquant Roadmap production
+8.5 Recommandation finale
+Le système est techniquement mature côté code (parité bit-exacte Python/Rust, 60 tests  
+cTrader,  gates  perf  validées)  mais  n'est  PAS  encore  prêt  pour  le  live  trading.  Les  conditions 
+bloquantes sont :
+• Recalibrage sous Convention A stricte (le calibrage actuel est optimiste).
+• Hold-out jour futur complet sur corpus cTrader réel.
+• Durcissement SSH avant prod.
+• Spécification de la synchronisation inter-symboles (E3).
+• Mise en place d'une revue humaine obligatoire avant tout commit de Devin sur le cœur métier.
+Sans ces 5 conditions, le système présenterait un risque de perte en capital réel supérieur à ce 
+que les chiffres auto-rapportés suggèrent.

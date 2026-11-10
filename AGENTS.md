@@ -90,15 +90,16 @@
 - Nouveau holdout propre = 27/10 (le 26/10 est « brûlé » — M2 : réutilisé
   plusieurs fois pendant les campagnes). Recalibrage sous Convention A
   stricte requis avant tout mode trade.
-- SSH serveur : ATTENTION, le durcissement documenté ci-avant n'est PAS
-  appliqué sur la box actuelle (vérifié 06/11 — `00-arb-hardening.conf`
-  absent, `50-cloud-init.conf` => `PasswordAuthentication yes` +
-  `PermitRootLogin yes`). Accès root par mot de passe fonctionne ; la
-  clé `~/.ssh/id_ed25519` est installée. À durcir avant prod (désactiver
-  le mot de passe une fois la clé confirmée).
-- Serveur Vultr prod : `root@104.238.181.77` (Silicon Valley) — 4 vCPU,
-  7,4 Go RAM, 130 Go libres, Ubuntu. Mot de passe dans `C:\arb_secrets\`
-  (hors git). Pas encore de toolchain Rust installée.
+- Serveur Vultr `104.238.181.77` : **appartient à un AUTRE projet
+  (clarification utilisateur 10/11/2026) — ne pas utiliser pour
+  Arbitrage_FX sans autorisation explicite.** Le corpus Dukascopy qui
+  y réside (`/opt/arb/data`) est à considérer indisponible ; données de
+  travail locales = `C:\arb_cs_journal\` (cBot 2-4 nov.) +
+  `journal/_archive\` (sessions Rust).
+  (Historique 06/11 : durcissement non appliqué —
+  `PasswordAuthentication yes` + `PermitRootLogin yes`, clé
+  `~/.ssh/id_ed25519` installée, `arb_ed25519` refusée. Reste la
+  responsabilité de l'autre projet, pas la nôtre.)
 
 ## Téléchargement Dukascopy (dukascopy-node 1.51.0)
 - `-to` est EXCLUSIF : pour un mois complet, `-to` = 1er jour du mois suivant.
@@ -114,9 +115,13 @@
 - `audit_quality.py` audit multi-facteurs détaillé · `test_pipeline.py` tests hors ligne (Linux)
 - `ssh_run.py` : `ARB_HOST` + clé SSH (pas de mot de passe dans le code).
   Clé effectivement installée sur la box : `~/.ssh/id_ed25519`
-  (`arb_ed25519` est refusée — Permission denied, 06/11)
+  (`arb_ed25519` est refusée — Permission denied, 06/11).
+  ⚠ 10/11 : la box appartient à un autre projet — scripts SSH
+  inutilisables pour Arbitrage_FX sans autorisation explicite.
 
 ## POC 3 jours (serveur $ARB_HOST, /opt/arb/poc)
+- ⚠ 10/11 : $ARB_HOST = box d'un autre projet — voir note ci-dessus.
+  Procédures ci-dessous conservées comme historique documentaire.
 - `fetch_poc.py` : `.bi5` direct Python (pas de dukascopy-node), 3 jours (22/23/26 oct. 2026),
   28 FX d'abord puis 32 bouts ; ledger `/opt/arb/data/poc_ledger.json` ; diviseur auto-détecté ;
   503 → backoff 30/90/300/600 s ; 403/429 → pause 2 h ; timeout 60 s (réponses ~18 s).
@@ -144,7 +149,11 @@
 - **Latence ECN** : jitter en microsecondes, tick→trade ≤ 1 ms total.
   `lat_ms` du moteur (1-10 ms) est donc pessimiste → marge de sécurité en
   calibrage.
-- **Commission** : 6 $ AR/100 K exécuté (3 $/côté — `COMM=3.00` dans poc_engine).
+- **Commission** : nominale 6 $ AR/100 K (3 $/côté — `COMM=3.00` dans
+  poc_engine). **Mesurée sur 37 fills réels cTrader demo (10/11) :
+  3,63–4,00 $/côté → le client live utilise `COMM_PER_100K_USD = 4,00`
+  (max observé, conservateur).** Toutes les calibrations existantes
+  (#87, corpus cBot) sous-évaluent les frais — recalibrage requis.
   Paliers de volume : peut descendre jusqu'à 3 $ AR/100 K (1,50 $/côté) — upside
   futur, `comm_scale` planché à 1,0 pour la campagne PoC (ne pas calibrer sur
   un taux non confirmé).
@@ -154,21 +163,49 @@
 - Cadrage : uniquement ce qu'IC Markets considère acceptable (univers Annexe J,
   PDS S1-S4, pas de CME dans l'implémentation IC).
 
-## Client cTrader Open API (`ctrader_client/`) — état 06/11/2026
+## Client cTrader Open API (`ctrader_client/`) — état 10/11/2026
 - Implémenté + testé : 60/60 tests, auth réelle validée sur
   `demo.ctraderapi.com:5035` (app_auth → ctid → account_auth), pipeline
   complet prouvé sur `mock_spotware` (kill/restart venue : re-bootstrap +
   re-warm-up fail-closed + détection reprise — voir DEPLOY.md annexe B).
 - Fix rustls `CryptoProvider::ring` installé au boot (commit 9202b4c).
-- Bloquants externes : approbation app `UltraGraph 2.0` (client_id
-  `47397_...`) + conversion NETTED du compte `49404217` (HEDGED → support
-  IC Markets saisi). Les tokens OAuth sont liés au client_id : régénérer
-  access+refresh pour la nouvelle app après approbation.
+- Comptes : demo NETTED de travail = ctid `49449511` (compte `10133694`,
+  ~100 k$) ; live identifié = ctid `49449505` (compte `6192336`, solde 0).
+  L'ancien compte `49404217` (HEDGED) n'est plus le compte de travail.
+  Mode Trade exige `ctid_trader_account_id` explicite + NETTED.
 - Secrets dans `C:\arb_secrets\ctrader_ultragraph.env` — JAMAIS dans git.
 - systemd prod : `Restart=always` OBLIGATOIRE (breaker sort en exit 0 —
   `on-failure` ne relancerait pas après un blip venue, voir DEPLOY.md §3).
-- cBot OgDetect arrêté le 04/11 (corpus 2-4 nov. collecté) — le client
-  natif devient la source de vérité une fois NETTED + app approuvée.
+- cBot OgDetect arrêté le 10/11 (corpus 2-4 nov., ~180 Mo dans
+  `C:\arb_cs_journal\`) — détect-only par construction (aucun ordre).
+
+### Paramètres live mesurés sur venue réelle (session 10/11/2026)
+- `NOTIONAL_USD = 10 000` — ddd_min scalé 2,66 → 0,27 $ (×10 vs #87@100K).
+- `COMM_PER_100K_USD = 4,00` — mesuré 3,63–4,00 $/côté sur 37 fills
+  réels ; les calibrations #87/#985 (comm 3,00) sous-évaluent les frais.
+- `fresh_ms = 8 000` — cTrader est send-on-change : une quote inchangée
+  RESTE exécutable (dernière quote = état courant). p99 des gaps réels
+  = 6,1 s → 8 s. À 909 ms la règle tuait ~41 % du temps les nœuds
+  devises en flux calme (A/B replay : 909 → 0 épisode, ≥2000 →
+  détections). Le watchdog 30 s couvre déjà la connexion morte.
+- Latence wire mesurée ~250–330 ms (timestamps socket, `q_ms`) — écart
+  detect→fill ≈ −0,5 à −1 $/cycle (session Trade du matin : −22,96 $
+  réalisé). Le PnL détecté (frais inclus, slippage exclu) est une borne
+  supérieure théorique, jamais un réalisé — detect après-midi :
+  103 épisodes, +187,70 $ théorique.
+- Viewers : `telemetry_view.py`/`telemetry.bat` (événements),
+  `ticks_view.py`/`ticks.bat` (flux brut), `live_view.py`/`live.bat`
+  (unifié ticks + PnL).
+- PIÈGE process : boucles superviseurs orphelines respawnent le client
+  sans secrets → crash-loops, verrous exe, doubles boots. Après toute
+  relance vérifier l'unicité (1 superviseur + 1 client).
+- Le repo vit dans OneDrive — verrous/conflits possibles sur journaux
+  et `target/` ; déplacer hors OneDrive recommandé avant prod.
+- Audit consolidé externe : `audit/Scan_Bugs_OpenGraph.pdf` (+
+  extraction `.txt`) — vérifié contre le code le 10/11 : exact sur
+  R6/R7/Conv-A corrigés, 43 tests `regime_indicators`, FIX incomplet.
+  Avertissements toujours valides : recalibrage Convention A + hold-out
+  jour futur requis avant tout mode Trade.
 
 ## Nouveau broker ECN négocié (utilisateur, 02/11/2026) — chemin prioritaire
 - **Commission 2 $ A/R/100 K** (1 $/côté) — vs 3 $/côté IC : économie ~×2

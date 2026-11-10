@@ -229,7 +229,7 @@ public partial class OgTrade : Robot
         double bestNet = double.NegativeInfinity; int bestPi = 0; double bestDdd = 0;
         for (int pi = 0; pi < _paths.Count; pi++)
         {
-            double rate = 1.0, comm = 0.0; bool valid = true;
+            double rate = 1.0, comm = 0.0, unwind = 0.0; bool valid = true;
             int[] legs = _paths[pi], dir = _pDir[pi], bas = _pBase[pi];
             for (int li = 0; li < legs.Length; li++)
             {
@@ -238,15 +238,34 @@ public partial class OgTrade : Robot
                 double ub = up[bas[li]];
                 comm += (ub > 0 && !double.IsNaN(ub)) ? COMM / ub : double.NaN;
                 rate *= (dir[li] == 1) ? _bid[e] : 1.0 / _ask[e];
+                // cloture reelle de la position marge : re-traversee complete
+                // du spread + 1 comm (meme formule que l'ouverture)
+                double mid = 0.5 * (_bid[e] + _ask[e]);
+                unwind += (mid > 0) ? (_ask[e] - _bid[e]) / mid * NOTIONAL : double.NaN;
             }
             if (!valid) continue;
             double upS = up[_pS[pi]];
             double qty0 = (upS > 0 && !double.IsNaN(upS)) ? NOTIONAL / upS : double.NaN;
             double usdOut = qty0 * rate * upLiq[_pEnd[pi]];
-            double commFx = (comm + commLiq[_pEnd[pi]]) * CommScale;
-            if (double.IsNaN(usdOut) || double.IsInfinity(usdOut) || double.IsNaN(commFx) || double.IsInfinity(commFx))
+            // comm aller-retour : ouverture + cloture par jambe
+            double commRt = 2.0 * comm;
+            // la liquidation modelisee (terminal != USD) est remplacee par les
+            // clotures reelles -> retrancher son cout (~1 traversee + 1 comm)
+            int se2 = _upSym[_pEnd[pi]];
+            if (se2 >= 0)
+            {
+                double mid2 = 0.5 * (_bid[se2] + _ask[se2]);
+                if (mid2 > 0)
+                {
+                    unwind -= (_ask[se2] - _bid[se2]) / mid2 * NOTIONAL;
+                    commRt -= commLiq[_pEnd[pi]];
+                }
+            }
+            if (commRt < 0) commRt = 0;
+            double commFx = commRt * CommScale;
+            if (double.IsNaN(usdOut) || double.IsInfinity(usdOut) || double.IsNaN(commFx) || double.IsInfinity(commFx) || double.IsNaN(unwind))
                 continue;
-            double net = usdOut - NOTIONAL - commFx;
+            double net = usdOut - NOTIONAL - commFx - unwind;
             if (net > bestNet) { bestNet = net; bestPi = pi; bestDdd = usdOut - NOTIONAL; }
         }
         if (double.IsNegativeInfinity(bestNet)) return null;

@@ -244,3 +244,17 @@
 - `python test_pipeline.py <dossier_src>` sur le serveur (13 vérifications attendues).
 - `python test_r7.py` sur le serveur : T1-T6 — quote future, rembobinage pos,
   rejouabilité inter-trials (post-R7).
+
+## Correction coût aller-retour marge (10/11/2026, mesuré sur OgTrade)
+- Smoke test demo (ddd=-1) : fills réels ~350 ms, slippage ~0, mais settle
+  réalisé ≈ -1,2 $/cycle vs net détecté -0,37. Cause : chaque position marge
+  se REFERME à travers le book — l'eval ne priceait que la conversion +
+  1 liquidation. Coût réel = (2 traversées + 2 comms)/jambe.
+- OgTrade.cs eval : ajout `unwind` = Σ_jambes spread_frac×NOTIONAL + comm
+  de clôture (2×comm), moins la liquidation modélisée (terminal ≠ USD).
+  Effet : terminal-USD +L closes, terminal≠USD +(L-1) closes.
+- **Le même biais existe dans engine/eval.rs** (`usd_liq` price une seule
+  liquidation) — correction Rust à porter : ajouter le coût unwind par jambe
+  avant tout recalibrage/trade via l'engine.
+- Conséquence seuil : un chemin doit détecter ≥ ~+1,2-1,5 $ de net pour
+  couvrir l'aller-retour réel à 10K — ddd=0,27 calibré conversion, pas marge.

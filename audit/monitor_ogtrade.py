@@ -30,10 +30,13 @@ def main():
         evs[ev] += 1
         t0 = e.get("t0")
         if ev == "system":
-            if e.get("msg", "").startswith("boot"):
+            msg = e.get("msg", "")
+            if msg.startswith("boot"):
                 boots += 1
-            elif e.get("msg") == "stop":
+            elif msg == "stop":
                 stops += 1
+            elif msg.startswith("evt "):
+                evs["_evt"] = e  # dernier snapshot de canaux
         elif ev == "tick":
             ticks += 1
         elif ev == "opportunity":
@@ -47,6 +50,19 @@ def main():
 
     print(f"journal {src.name} | {ticks} ticks | boots={boots} stops={stops}")
     print(f"events : {dict(evs)}")
+    if evs.get("_evt"):
+        print(f"canaux  : {evs['_evt'].get('msg')}")
+    lat = []
+    for s in seqs.values():
+        sends = {l["e"]: l["ts"] for l in s["legs"] if l["ev"] == "leg_send"}
+        for l in s["legs"]:
+            if l["ev"] == "leg_fill" and l["e"] in sends:
+                lat.append(l["ts"] - sends[l["e"]])
+    if lat:
+        lat.sort()
+        n = len(lat)
+        print(f"latence leg send->fill : med={lat[n//2]}ms"
+              f" p90={lat[int(n*0.9)]}ms max={lat[-1]}ms n={n}")
     n_done = n_abort = 0
     pnl_tot = 0.0
     gaps = []

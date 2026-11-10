@@ -247,6 +247,7 @@ public partial class OgTrade : Robot
         long t = Now();
         RefreshAll(t);
         TryDetect(t);
+        _j?.Flush();   // buffer tick -> disque toutes les 250 ms
         if (t - _lastEvtLog >= 300_000)
         {
             _lastEvtLog = t;
@@ -496,7 +497,11 @@ public partial class OgTrade : Robot
         if (day == _jDay && _j != null) return;
         _j?.Dispose();
         _jDay = day;
-        _j = new StreamWriter(Path.Combine(JournalDir, day + ".jsonl"), append: true) { AutoFlush = true };
+        _j = new StreamWriter(Path.Combine(JournalDir, day + ".jsonl"), append: true);
+        // AutoFlush OFF : les ticks (corpus) restent en buffer — la latence
+        // disque ne doit pas rentrer dans le chemin de detection. Les events
+        // d'audit (opp/legs/settle/sys) flush explicitement ; OnTimer flush
+        // le buffer tick toutes les 250 ms (perte max ~1 s de corpus au crash).
     }
     void LogTick(long t, int e, double bid, double ask)
     {
@@ -511,6 +516,7 @@ public partial class OgTrade : Robot
         _j.WriteLine(string.Format(CultureInfo.InvariantCulture,
             "{{\"ev\":\"opportunity\",\"t0\":{0},\"pi\":{1},\"net_usd\":{2:R},\"ddd_usd\":{3:R},\"start\":\"{4}\",\"legs\":{5},\"path\":[{6}],\"traded\":true}}",
             t, pi, net, ddd, CURR[_pS[pi]], _paths[pi].Length, legs));
+        _j.Flush();
     }
     void LogLeg(long t0, string ev, int e, string side, double vol, double px)
     {
@@ -518,6 +524,7 @@ public partial class OgTrade : Robot
         _j.WriteLine(string.Format(CultureInfo.InvariantCulture,
             "{{\"ev\":\"{0}\",\"t0\":{1},\"e\":{2},\"side\":\"{3}\",\"vol\":{4:R},\"px\":{5:R},\"ts\":{6}}}",
             ev, t0, e, side, vol, px, Now()));
+        _j.Flush();
     }
     void LogSettle(long t0, int pi, bool aborted, string why, double pnl, int filled, int unwound)
     {
@@ -525,11 +532,13 @@ public partial class OgTrade : Robot
         _j.WriteLine(string.Format(CultureInfo.InvariantCulture,
             "{{\"ev\":\"settle\",\"t0\":{0},\"pi\":{1},\"aborted\":{2},\"why\":\"{3}\",\"pnl_usd\":{4:R},\"filled\":{5},\"unwound\":{6},\"ts\":{7}}}",
             t0, pi, aborted ? "true" : "false", why, pnl, filled, unwound, Now()));
+        _j.Flush();
     }
     void LogSys(string msg)
     {
         EnsureJ(Now());
         _j.WriteLine("{\"ev\":\"system\",\"msg\":\"" + msg.Replace("\"", "'") + "\",\"ts\":" + Now() + "}");
+        _j.Flush();
     }
 
     // ------------------------------------------------- self-test parite

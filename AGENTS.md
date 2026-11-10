@@ -301,3 +301,22 @@
 - Instance GUI : l'instance existante garde SES params sauvegardés —
   vérifier DddMin=0.4 dans le panneau avant Start (le défaut 0.4 ne
   s'applique qu'aux NOUVELLES instances).
+
+## OgTrade v2 — pilotage evenementiel (10/11/2026 nuit)
+- Detection declenchee par `Symbol.Tick` sur les 28 paires (la quote
+  bouge -> eval immediate) + OnTick chart + Timer 250 ms fallback.
+  Mesure live : symTick ~11 evts/s vs onTick ~0.3/s (canal ~40x).
+- `OnTimer` heartbeat : resync depuis proprietes live + flush buffer
+  ticks + stats canaux (`evt onTick=.. symTick=.. timer=..` toutes 5 min).
+- I/O : journal ticks bufferise (AutoFlush OFF) — la latence disque
+  sort du chemin de detection ; audit events flush explicitement.
+- Settle : PnL REALISE depuis History(PositionId).NetProfit (commissions
+  incluses), fallback NetProfit pre-cloture si pas encore indexe.
+- Parite C#<->Rust verifiee aux constantes : COMM=0.40$/jambe (4.00/100K,
+  max des 37 fills mesures), NOTIONAL=10K, comm_rt=2x, unwind par jambe,
+  traversée liq retranchee terminal!=USD.
+- Rebuild cAlgo => auto-restart de l'instance observe (le .algo est
+  recharge ~8 s apres build).
+- Recalibrage soiree (18h-22h) : med gap 1.77s, p90 7.2s ; nets max
+  +0.15$ -> ZERO fenetre tradeable ces heures — l'edge se concentre
+  aux heures liquides (attendu Tokyo ~01h, Londres ~08h).

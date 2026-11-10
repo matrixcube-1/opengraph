@@ -1,0 +1,56 @@
+{
+  "AccessRights": "FullAccess",
+  "AddIndicators": true,
+  "Parameters": [
+    {
+      "Name": "JournalDir",
+      "DefaultValue": "C:\\arb_og_trade",
+      "Type": "String"
+    },
+    {
+      "Name": "FreshMs",
+      "DefaultValue": 8000.0,
+      "Type": "Double"
+    },
+    {
+      "Name": "SpreadCap",
+      "DefaultValue": 1.76,
+      "Type": "Double"
+    },
+    {
+      "Name": "CommScale",
+      "DefaultValue": 1.10,
+      "Type": "Double"
+    },
+    {
+      "Name": "DddMin",
+      "DefaultValue": 0.27,
+      "Type": "Double"
+    },
+    {
+      "Name": "MaxRangeBp",
+      "DefaultValue": 2.08,
+      "Type": "Double"
+    },
+    {
+      "Name": "QMin",
+      "DefaultValue": 0.5,
+      "Type": "Double"
+    },
+    {
+      "Name": "MinSeqGapMs",
+      "DefaultValue": 2000,
+      "Type": "Int32"
+    },
+    {
+      "Name": "MaxConsecFail",
+      "DefaultValue": 5,
+      "Type": "Int32"
+    },
+    {
+      "Name": "AllowLive",
+      "DefaultValue": false,
+      "Type": "Boolean"
+    }
+  ]
+}

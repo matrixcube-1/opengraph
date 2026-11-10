@@ -50,10 +50,11 @@ def main():
     # comme mc_realiste ; exec_seq aux seuils
     tick_ts = {e: np.array([t[0] for t in ticks if t[1] == e])
                for e in range(28)}
-    lock_until = np.full(28, -1e18)
+    lock_until = {d: np.full(28, -1e18)
+                  for d in (0.27, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0)}
     nets = []
-    trades = {d: [] for d in (0.27, 1.0, 2.0)}
-    t_free = -1e18
+    trades = {d: [] for d in lock_until}
+    t_free = {d: -1e18 for d in lock_until}
     last_t = -1
     for ts, e, bid, ask in ticks:
         if ts == last_t:
@@ -65,9 +66,9 @@ def main():
         pi, net, ddd = ev
         nets.append((ts, net, ddd))
         for d in trades:
-            if net >= d and ts >= t_free:
+            if net >= d and ts >= t_free[d]:
                 legs = [FX.index(s) for s in eng.legs(pi)]
-                if any(lock_until[e2] > ts for e2 in legs):
+                if any(lock_until[d][e2] > ts for e2 in legs):
                     continue
                 r = eng.exec_seq(ts, pi, P["lat_ms"], P["tau_slip_bp"],
                                  P["q_min"], False)
@@ -79,9 +80,9 @@ def main():
                                       dur=dur))
                 for e2 in legs:
                     j = int(np.searchsorted(tick_ts[e2], ts, "right"))
-                    lock_until[e2] = (tick_ts[e2][j]
-                                      if j < len(tick_ts[e2]) else 1e18)
-                t_free = ts + max(dur, 1.0) + P["cooldown_ms"]
+                    lock_until[d][e2] = (tick_ts[e2][j]
+                                         if j < len(tick_ts[e2]) else 1e18)
+                t_free[d] = ts + max(dur, 1.0) + P["cooldown_ms"]
 
     nets_a = np.array([n[1] for n in nets])
     print(f"\n=== distribution nets détectés (evals={len(nets_a)}) ===")

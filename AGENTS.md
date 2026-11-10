@@ -278,3 +278,26 @@
 - OgTrade.cs : mêmes formules que le Rust (unwind/jambe, comm 2x, liq
   remplacée). Params jour : ddd=0.27, fresh=8000, cap 1.76, scale 1.10,
   range 2.08, q_min 0.5, gap 2000, breaker 5, AllowLive=false.
+
+## OgTrade launch-ready (10/11/2026 soir)
+- `ctrader-cli.exe build` trouvé : `AppData/Local/Spotware/cTrader/<hash>/`
+  compile un projet en `.algo` hors GUI (success JSON, erreurs compile).
+  `run`/`backtest`/`optimize` existent aussi mais exigent ctid+pwd-file.
+- OgTrade.cs final : économie marge corrigée (unwind/jambe, comm 2x, liq
+  remplacée — parité Rust) + **tolérance IOC logicielle** : avant chaque
+  jambe li>0, compare sym.Bid/Ask LIVE (maj plateforme, indépendant de
+  OnTick sérialisé) au quote t0 ; écart adverse > MaxRangeBp => abort
+  "stale" — même sémantique que tau_slip du moteur. ExecuteMarketOrder
+  synchrone seul dispo dans cette API (MarketRange = async uniquement).
+- Seuil calibré corpus réel : ddd=0.4 (3/3 wins +1.90$ vs 0.27 3/4 +1.69$ ;
+  le seul perdant -0.14 venait d'un net +0.34 marginal). n<=4 => fragile,
+  mais 0.4 = filtre bruit détection ~2 sigma.
+- Replay sweep corrigé : t_free/lock étaient PARTAGES entre seuils =>
+  les seuils hauts étaient affamés ; désormais indépendants.
+- Détecté vs réalisé corrigé : +0.78->+0.85, parité modèle confirmée.
+- Monitor : `audit/monitor_ogtrade.py` — résume le journal jour :
+  séquences, gap réalisé-détecté (attendu ~0 sous nouveau modèle),
+  aborts, pnl total.
+- Instance GUI : l'instance existante garde SES params sauvegardés —
+  vérifier DddMin=0.4 dans le panneau avant Start (le défaut 0.4 ne
+  s'applique qu'aux NOUVELLES instances).

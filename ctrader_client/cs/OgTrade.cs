@@ -45,7 +45,7 @@ public partial class OgTrade : Robot
     public double SpreadCap { get; set; }
     [Parameter("CommScale", DefaultValue = 1.10)]
     public double CommScale { get; set; }
-    [Parameter("DddMin", DefaultValue = 0.27)]
+    [Parameter("DddMin", DefaultValue = 0.4)]
     public double DddMin { get; set; }
     [Parameter("MaxRangeBp", DefaultValue = 2.08)]
     public double MaxRangeBp { get; set; }
@@ -298,6 +298,24 @@ public partial class OgTrade : Robot
                 double volBase = (d == 1) ? qty : qty / px;
                 double vol = sym.NormalizeVolumeInUnits(volBase, RoundingMode.Down);
                 if (vol < sym.VolumeInUnitsMin) { why = "vol<min"; aborted = true; break; }
+                // tolerance IOC logicielle : OnTick est serialise donc _bid/_ask
+                // n'evoluent pas pendant la sequence, mais sym.Bid/Ask sont
+                // des proprietes live mises a jour par la plateforme. Apres
+                // ~300 ms de fill de la jambe k-1, on compare le prix live au
+                // prix du tick t0 — ecart adverse > MaxRangeBp => abort
+                // (meme semantique que tau_slip dans exec_seq).
+                if (li > 0)
+                {
+                    double live = (d == 1) ? sym.Bid : sym.Ask;
+                    double devBp = (d == 1) ? (px - live) / px * 1e4
+                                            : (live - px) / px * 1e4;
+                    if (live > 0 && devBp > MaxRangeBp)
+                    {
+                        LogLeg(t0, "leg_rej", e,
+                               "stale:" + devBp.ToString("F2"), vol, live);
+                        why = "stale"; aborted = true; break;
+                    }
+                }
                 var side = (d == 1) ? TradeType.Sell : TradeType.Buy;
                 LogLeg(t0, "leg_send", e, side.ToString(), vol, px);
                 var res = ExecuteMarketOrder(side, sym.Name, vol, LABEL);

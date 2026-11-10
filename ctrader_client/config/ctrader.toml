@@ -11,7 +11,8 @@ env = "demo"
 mode = "detect"
 
 # ctidTraderAccountId du compte ; 0 = résolu via la liste du token
-ctid_trader_account_id = 0
+# REQUIS en mode trade (fail-closed) — compte DÉMO NETTED uniquement.
+ctid_trader_account_id = 49449511
 
 # Dossier des journaux JSONL (un fichier par jour UTC)
 journal_dir = "journal"
@@ -29,7 +30,7 @@ reconcile_s = 30
 fresh_ms = 909.0
 spread_cap = 1.76
 comm_scale = 1.10
-ddd_min = 2.66         # seuil calibré (trial #87)
+ddd_min = 0.27         # trial #87 (2.66) mis à l'échelle du notionnel 10 K
 q_min = 0.5
 leg_timeout_ms = 2000  # IOC doit résoudre << 1 s ; sinon abort + unwind
 req_timeout_s = 10

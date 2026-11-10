@@ -33,7 +33,8 @@ use ctrader_client::orders::{
     new_order_req, on_execution_event, FillAcc, LegIntent, LegResolution,
 };
 use ctrader_client::proto::spotware::{
-    ProtoOAErrorRes, ProtoOAExecutionEvent, ProtoOAGetAccountListByAccessTokenRes,
+    ProtoOAErrorRes, ProtoOAExecutionEvent, ProtoOAExecutionType,
+    ProtoOAGetAccountListByAccessTokenRes,
     ProtoOAOrderErrorEvent, ProtoOAPayloadType, ProtoOAReconcileRes, ProtoOASpotEvent,
     ProtoOASubscribeSpotsReq, ProtoOASymbolByIdReq, ProtoOASymbolByIdRes, ProtoOASymbolsListReq,
     ProtoOASymbolsListRes, ProtoOATradeSide, ProtoOATraderRes, ProtoMessage,
@@ -214,6 +215,9 @@ struct State {
     unwind_no: u64,
     /// `sent_ms` de la dernière jambe (lat_ms du journal).
     last_leg_sent_ms: i64,
+    /// `Instant` d'arrivée socket du message en cours de traitement —
+    /// mesure du délai de file interne (`q_ms` des LegFill/UnwindFill).
+    last_inbound_at: Instant,
     flatten_done_today: bool,
     /// `true` après adoption de la baseline venue (post-reconnect).
     recon_seeded: bool,
@@ -252,6 +256,7 @@ impl State {
             unwind_outstanding: 0,
             unwind_no: 0,
             last_leg_sent_ms: 0,
+            last_inbound_at: Instant::now(),
             flatten_done_today: false,
             recon_seeded: false,
             warm_ticks: [0; 28],
@@ -563,6 +568,7 @@ fn journal_leg_fill(
         px_node,
         order_id,
         lat_ms: now_ms() - st.last_leg_sent_ms,
+        q_ms: st.last_inbound_at.elapsed().as_millis() as i64,
         commission: comm,
     });
 }
@@ -819,6 +825,7 @@ async fn on_exec(
                     qty_base,
                     px_fill,
                     order_id,
+                    q_ms: st.last_inbound_at.elapsed().as_millis() as i64,
                     commission: f.fills.comm,
                 });
                 // IOC partiel : le reste de la position reste à fermer.
@@ -968,6 +975,25 @@ async fn handle_frame(
         }
         2126 => {
             let Ok(ev) = decode_payload::<ProtoOAExecutionEvent>(&msg) else { return Ok(()) };
+            journal.log(now_ms(), &JEvent::ExecStamp {
+                coid: ev.order.as_ref()
+                    .and_then(|o| o.clientOrderId.as_deref())
+                    .unwrap_or("").into(),
+                etype: match ev.executionType {
+                    ProtoOAExecutionType::ORDER_ACCEPTED => "ACC",
+                    ProtoOAExecutionType::ORDER_FILLED => "FILL",
+                    ProtoOAExecutionType::ORDER_PARTIAL_FILL => "PART",
+                    ProtoOAExecutionType::ORDER_CANCELLED => "CXL",
+                    ProtoOAExecutionType::ORDER_EXPIRED => "EXP",
+                    ProtoOAExecutionType::ORDER_REJECTED => "REJ",
+                    _ => "OTH",
+                },
+                o_ts: ev.order.as_ref()
+                    .and_then(|o| o.utcLastUpdateTimestamp).unwrap_or(0),
+                d_ts: ev.deal.as_ref().map(|d| d.executionTimestamp).unwrap_or(0),
+                rx_ms: now_ms(),
+                q_ms: st.last_inbound_at.elapsed().as_millis() as i64,
+            });
             on_exec(st, &ev, handle, sym, journal, cfg).await;
         }
         2132 => {
@@ -1224,7 +1250,8 @@ async fn run_session(
     loop {
         tokio::select! {
             inc = handle.inbound.recv() => match inc {
-                Some(Incoming::Msg(m)) => {
+                Some(Incoming::Msg(m, rx_at)) => {
+                    st.last_inbound_at = rx_at;
                     handle_frame(&mut st, m, handle, &sym, journal, cfg).await?;
                 }
                 Some(Incoming::Dead(d)) => return Err(ClientError::Dead(d)),

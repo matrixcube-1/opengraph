@@ -200,11 +200,11 @@ mod tests {
         // à 1/ask(USDCAD) ; comm = jambe CADJPY (COMM/up[CAD]) + liq (COMM).
         let mid_cadjpy = ups[5] / ups[3] * 0.995;
         let ask = mid_cadjpy * 1.0001;
-        let qty0 = 100_000.0 / ups[3];
+        let qty0 = crate::fees::NOTIONAL_USD / ups[3];
         let usd_out = qty0 * (1.0 / ask) / (1.35 * 1.0001);
-        let comm = crate::fees::COMM_PER_SIDE_USD / ups[5]
-            + crate::fees::COMM_PER_SIDE_USD;
-        let expected = usd_out - 100_000.0 - comm;
+        let comm = crate::fees::comm_usd() / ups[5]
+            + crate::fees::comm_usd();
+        let expected = usd_out - crate::fees::NOTIONAL_USD - comm;
         assert!((r.net_usd - expected).abs() < 1e-6);
         assert!(r.net_usd > 0.0);
     }

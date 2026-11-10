@@ -385,7 +385,7 @@ async fn e2e_bootstrap_spot_order_reconcile() {
             .await
             .unwrap()
         {
-            Some(Incoming::Msg(m)) => {
+            Some(Incoming::Msg(m, _)) => {
                 if dispatch_response(&handle, m.clone()) {
                     continue;
                 }
@@ -428,7 +428,7 @@ async fn e2e_bootstrap_spot_order_reconcile() {
             .await
             .unwrap()
         {
-            Some(Incoming::Msg(m)) => {
+            Some(Incoming::Msg(m, _)) => {
                 if dispatch_response(&handle, m.clone()) {
                     continue;
                 }

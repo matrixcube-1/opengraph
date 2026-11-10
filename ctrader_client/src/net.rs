@@ -10,7 +10,7 @@
 //! ```
 
 use std::borrow::Cow;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
@@ -28,8 +28,9 @@ use crate::proto::spotware::ProtoMessage;
 /// Événement entrant pour la stratégie.
 #[derive(Debug)]
 pub enum Incoming {
-    /// Enveloppe venue décodée (heartbeat, spot, execution, réponse, ...).
-    Msg(ProtoMessage<'static>),
+    /// Enveloppe venue décodée (heartbeat, spot, execution, réponse, ...)
+    /// taguée de son `Instant` d'arrivée au socket (mesure du délai de file).
+    Msg(ProtoMessage<'static>, Instant),
     /// Le transport est tombé (EOF/erreur/heartbeat mort) -> reconnect.
     Dead(String),
 }
@@ -148,7 +149,7 @@ where
                     pump_rx.touch();
                     match decode_msg(&payload) {
                         Ok(m) => {
-                            if in_tx.send(Incoming::Msg(m)).await.is_err() {
+                            if in_tx.send(Incoming::Msg(m, Instant::now())).await.is_err() {
                                 return;
                             }
                         }
@@ -287,7 +288,7 @@ pub async fn rpc<M: quacky::MessageWrite>(
                     )));
                 }
                 inc = handle.inbound.recv() => match inc {
-                    Some(Incoming::Msg(m)) => {
+                    Some(Incoming::Msg(m, _)) => {
                         dispatch_response(handle, m);
                     }
                     Some(Incoming::Dead(d)) => return Err(ClientError::Dead(d)),
@@ -381,7 +382,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             while !(got_spot && got_resp) {
                 match handle.inbound.recv().await {
-                    Some(Incoming::Msg(m)) => {
+                    Some(Incoming::Msg(m, _)) => {
                         if dispatch_response(&handle, m.clone()) {
                             got_resp = true;
                         } else {

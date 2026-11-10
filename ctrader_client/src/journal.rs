@@ -27,6 +27,20 @@ pub enum JEvent {
         legs: u8,
         traded: bool,
     },
+    /// Stamp horloge venue d'un ExecutionEvent 2126 — attribution de la
+    /// latence : deltas entre `o_ts`/`d_ts` (même horloge serveur) et
+    /// `rx_ms` (horloge locale à la réception).
+    ExecStamp {
+        coid: String,
+        etype: &'static str,
+        /// `order.utcLastUpdateTimestamp` venue (0 si absent).
+        o_ts: i64,
+        /// `deal.executionTimestamp` venue (0 si absent).
+        d_ts: i64,
+        rx_ms: i64,
+        /// File interne socket->stratégie pour cet event précis.
+        q_ms: i64,
+    },
     /// Ordre jambe envoyé.
     LegSend {
         t0: i64,
@@ -51,6 +65,9 @@ pub enum JEvent {
         px_node: f64,
         order_id: i64,
         lat_ms: i64,
+        /// Délai file interne : arrivée socket -> début du traitement de
+        /// l'event par la stratégie (isole local vs venue dans `lat_ms`).
+        q_ms: i64,
         /// Commission venue débitée sur les fills (signée, devise du compte).
         commission: f64,
     },
@@ -78,6 +95,8 @@ pub enum JEvent {
         qty_base: f64,
         px_fill: f64,
         order_id: i64,
+        /// Délai file interne : arrivée socket -> traitement (cf. LegFill).
+        q_ms: i64,
         /// Commission venue débitée (signée).
         commission: f64,
     },

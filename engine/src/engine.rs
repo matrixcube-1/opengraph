@@ -12,7 +12,7 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
-use crate::fees::COMM_PER_SIDE_USD;
+use crate::fees::comm_usd;
 use crate::quote::Quote;
 use crate::universe::{pair_nodes, CURR, FX};
 
@@ -132,7 +132,7 @@ pub struct Engine {
     /// Événements FX triés `(ts, si)` pour le scan événementiel.
     pub ev: Vec<(i64, usize)>,
     /// Commission par côté et par 100 000 USD de notionnel base.
-    /// Défaut `COMM_PER_SIDE_USD` (3,00 — IC historique) ; ECN 2 $ A/R
+    /// Défaut `comm_usd()` (4,00 — max observé fills demo IC) ; ECN 2 $ A/R
     /// → 1,00. Un seul paramètre lu par éval, exécution ET liquidation —
     /// cohérence comptable garantie par construction.
     pub comm_per_side: f64,
@@ -221,7 +221,7 @@ impl Engine {
             fx_si,
             up_pair,
             ev,
-            comm_per_side: COMM_PER_SIDE_USD,
+            comm_per_side: comm_usd(),
         }
     }
 

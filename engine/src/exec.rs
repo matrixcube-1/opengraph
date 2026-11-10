@@ -473,11 +473,11 @@ mod tests {
         // USDCAD = 1/(1.35*1.0001)) ; comm jambe 3/up[CAD] + comm liq 3.
         let mid = ups[5] / ups[3] * 0.995;
         let ask = mid * 1.0001;
-        let qty = 100_000.0 / ups[3] / ask;
+        let qty = crate::fees::NOTIONAL_USD / ups[3] / ask;
         let usdcad_ask = 1.35 * 1.0001;
-        let expected = qty / usdcad_ask - 100_000.0
-            - crate::fees::COMM_PER_SIDE_USD / ups[5]
-            - crate::fees::COMM_PER_SIDE_USD;
+        let expected = qty / usdcad_ask - crate::fees::NOTIONAL_USD
+            - crate::fees::comm_usd() / ups[5]
+            - crate::fees::comm_usd();
         assert!((pnl_usd - expected).abs() < 1e-6);
         assert_eq!(dur_ms, 2.5);
         assert_eq!(filled_legs, 1);
@@ -551,7 +551,7 @@ mod tests {
         let mut series = book_distorted();
         for s in &mut series {
             if s.sym == "CADJPY" {
-                s.avol[1] = 0.05; // 50 K CAD no ask < ~74 K requis (jambe buy)
+                s.avol[1] = 0.005; // 5 K CAD no ask < ~7,4 K requis a 10 K (jambe buy)
             }
         }
         let mut e = Engine::new(series);
@@ -571,7 +571,7 @@ mod tests {
         let mut series = book_distorted();
         for s in &mut series {
             if s.sym == "CADJPY" {
-                s.avol[1] = 0.05; // ask fino (lado que a compra atinge)
+                s.avol[1] = 0.005; // ask fino (lado que a compra atinge)
                 s.bvol[1] = 50.0; // bid fundo — max() esconderia a falta
             }
         }
@@ -704,18 +704,18 @@ mod tests {
         let up_cad = 1.0 / 1.35; // up[CAD] du fixture (ups[5])
         // comm = jambe CADJPY (COMM/up[CAD]) + liquidation CAD->USD (COMM,
         // paire inverse USDCAD -> base USD)
-        let comm = crate::fees::COMM_PER_SIDE_USD / up_cad
-            + crate::fees::COMM_PER_SIDE_USD;
+        let comm = crate::fees::comm_usd() / up_cad
+            + crate::fees::comm_usd();
         // coût de débouclage par arête : med_rel x notional + comm —
-        // la fixture a un spread relatif de 2 bp -> ~23 $ (avant : 12 $ fixe)
+        // la fixture a un spread relatif de 2 bp -> 2,0 $ + 0,40 $ comm
         let abort_cost = e.med[si] / ((bid_l + ask) * 0.5)
             * crate::fees::NOTIONAL_USD
-            + crate::fees::COMM_PER_SIDE_USD;
-        assert!((abort_cost - 23.0).abs() < 1.0);
+            + crate::fees::comm_usd();
+        assert!((abort_cost - 2.4).abs() < 0.1);
         assert!((pnl2 - (-abort_cost - comm)).abs() < 1e-9);
         // resid_usd = position abandonnée marquée exécutable : 15M JPY ->
         // CAD liquidés à 1/ask(USDCAD)
-        assert!((resid2 - 15e6 / ask / (1.35 * 1.0001)).abs() < 1e-6);
+        assert!((resid2 - 1.5e6 / ask / (1.35 * 1.0001)).abs() < 1e-6);
     }
 
     /// Partiel 60 % via settle = même résiduel cash que exec_seq partiel.
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(parts_s, 1);
         assert!((pnl_s - pnl_usd).abs() / pnl_usd.abs().max(1.0) < 1e-12);
         // resid_usd = qty_end(=15M*0.6/ask_f) marqué exécutable (1/ask USDCAD)
-        assert!((residp - 15e6 * 0.6 / ask_f / (1.35 * 1.0001)).abs() < 1e-6);
+        assert!((residp - 1.5e6 * 0.6 / ask_f / (1.35 * 1.0001)).abs() < 1e-6);
     }
 
     /// `start_qty` = NOTIONAL / up[start] — JPY : 100 k x 150.
@@ -755,6 +755,6 @@ mod tests {
         let pi = path_jpy_cad(&pt);
         e.sync(1_000);
         let q = e.start_qty(pi, &pt).unwrap();
-        assert!((q - 100_000.0 * 150.0).abs() < 1e-6);
+        assert!((q - crate::fees::NOTIONAL_USD * 150.0).abs() < 1e-6);
     }
 }

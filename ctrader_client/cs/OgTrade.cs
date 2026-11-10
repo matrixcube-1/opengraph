@@ -247,21 +247,18 @@ public partial class OgTrade : Robot
             double upS = up[_pS[pi]];
             double qty0 = (upS > 0 && !double.IsNaN(upS)) ? NOTIONAL / upS : double.NaN;
             double usdOut = qty0 * rate * upLiq[_pEnd[pi]];
-            // comm aller-retour : ouverture + cloture par jambe
+            // comm aller-retour : ouverture + cloture par jambe (les clotures
+            // SONT la liquidation — pas d'ordre de liq separe, commLiq omise)
             double commRt = 2.0 * comm;
-            // la liquidation modelisee (terminal != USD) est remplacee par les
-            // clotures reelles -> retrancher son cout (~1 traversee + 1 comm)
+            // la traversee de la liquidation modelisee (terminal != USD) est
+            // deja pricee dans usdOut via upLiq -> retrancher ~1 traversee
             int se2 = _upSym[_pEnd[pi]];
             if (se2 >= 0)
             {
                 double mid2 = 0.5 * (_bid[se2] + _ask[se2]);
                 if (mid2 > 0)
-                {
                     unwind -= (_ask[se2] - _bid[se2]) / mid2 * NOTIONAL;
-                    commRt -= commLiq[_pEnd[pi]];
-                }
             }
-            if (commRt < 0) commRt = 0;
             double commFx = commRt * CommScale;
             if (double.IsNaN(usdOut) || double.IsInfinity(usdOut) || double.IsNaN(commFx) || double.IsInfinity(commFx) || double.IsNaN(unwind))
                 continue;

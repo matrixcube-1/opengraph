@@ -225,11 +225,41 @@ impl Engine {
             t = t_f;
         }
 
-        let (r_end, c_end) = liq(node);
-        comm += c_end;
+        let (r_end, _c_end) = liq(node);
         let usd_end = qty * r_end;
+        // Unwind marge réel : chaque jambe remplie se REFERME à travers le
+        // book (traversée complète du spread + 1 comm) — les clôtures SONT
+        // la liquidation, il n'y a pas d'ordre de liq séparé (audit marge
+        // 10/11 : mesuré live, settle -1,2 $ vs net détecté -0,37 sans ce
+        // terme). La traversée de la paire USD du terminal, déjà pricée
+        // dans r_end, est retranchée pour les terminaux ≠ USD.
+        let mut unwind = 0.0f64;
+        let mut comm_rt = comm;
+        for &e in legs.iter().take(filled as usize) {
+            let Some(si) = self.fx_si[e as usize] else {
+                continue;
+            };
+            let mid = 0.5 * (self.bid[si] + self.ask[si]);
+            unwind += if mid.is_finite() && mid > 0.0 {
+                (self.ask[si] - self.bid[si]) / mid * NOTIONAL_USD
+            } else {
+                f64::NAN
+            };
+            let (a, _) = Self::edge_nodes(e);
+            comm_rt += if up[a as usize].is_finite() {
+                self.comm_per_side / up[a as usize]
+            } else {
+                self.comm_per_side
+            };
+        }
+        if let Some(sj) = self.usd_pair_si(node) {
+            let mid2 = 0.5 * (self.bid[sj] + self.ask[sj]);
+            if mid2.is_finite() && mid2 > 0.0 {
+                unwind -= (self.ask[sj] - self.bid[sj]) / mid2 * NOTIONAL_USD;
+            }
+        }
         Some(ExecOutcome::Done {
-            pnl_usd: usd_end + cash - NOTIONAL_USD - comm,
+            pnl_usd: usd_end + cash - NOTIONAL_USD - comm_rt - unwind,
             filled_legs: filled,
             partial_legs: parts,
             dur_ms: t - t0 as f64,
@@ -366,17 +396,39 @@ impl Engine {
 
         // Liquidation exécutable du résiduel — seulement si une position
         // existe réellement (abort à 0 fill : rien n'a été acheté).
-        let (r_end, c_end) = liq(node);
-        let resid_usd = if filled > 0 {
-            comm += c_end;
-            qty * r_end
-        } else {
-            0.0
-        };
+        let (r_end, _c_end) = liq(node);
+        let resid_usd = if filled > 0 { qty * r_end } else { 0.0 };
         let pnl = if aborted {
             -(self.abort_cost(legs, filled)) + cash - comm
         } else {
-            resid_usd + cash - NOTIONAL_USD - comm
+            // même unwind marge que exec_seq : clôtures réelles par jambe
+            // (traversée + comm), traversée de la paire USD du terminal
+            // déjà pricée dans r_end retranchée si ≠ USD.
+            let mut unwind = 0.0f64;
+            for &e in legs.iter().take(filled as usize) {
+                let Some(si) = self.fx_si[e as usize] else {
+                    continue;
+                };
+                let mid = 0.5 * (self.bid[si] + self.ask[si]);
+                unwind += if mid.is_finite() && mid > 0.0 {
+                    (self.ask[si] - self.bid[si]) / mid * NOTIONAL_USD
+                } else {
+                    f64::NAN
+                };
+                let (a, _) = Self::edge_nodes(e);
+                comm += if up[a as usize].is_finite() {
+                    self.comm_per_side / up[a as usize]
+                } else {
+                    self.comm_per_side
+                };
+            }
+            if let Some(sj) = self.usd_pair_si(node) {
+                let mid2 = 0.5 * (self.bid[sj] + self.ask[sj]);
+                if mid2.is_finite() && mid2 > 0.0 {
+                    unwind -= (self.ask[sj] - self.bid[sj]) / mid2 * NOTIONAL_USD;
+                }
+            }
+            resid_usd + cash - NOTIONAL_USD - comm - unwind
         };
         Some((pnl, filled, parts, resid_usd))
     }
@@ -475,9 +527,10 @@ mod tests {
         let ask = mid * 1.0001;
         let qty = crate::fees::NOTIONAL_USD / ups[3] / ask;
         let usdcad_ask = 1.35 * 1.0001;
+        // comm = ouverture + clôture de la jambe (unwind = 0 : même half
+        // sur CADJPY et USDCAD).
         let expected = qty / usdcad_ask - crate::fees::NOTIONAL_USD
-            - crate::fees::comm_usd() / ups[5]
-            - crate::fees::comm_usd();
+            - 2.0 * crate::fees::comm_usd() / ups[5];
         assert!((pnl_usd - expected).abs() < 1e-6);
         assert_eq!(dur_ms, 2.5);
         assert_eq!(filled_legs, 1);
@@ -702,10 +755,10 @@ mod tests {
             .unwrap();
         assert_eq!(filled2, 1);
         let up_cad = 1.0 / 1.35; // up[CAD] du fixture (ups[5])
-        // comm = jambe CADJPY (COMM/up[CAD]) + liquidation CAD->USD (COMM,
-        // paire inverse USDCAD -> base USD)
-        let comm = crate::fees::comm_usd() / up_cad
-            + crate::fees::comm_usd();
+        // comm = jambe CADJPY seule (COMM/up[CAD]) — abort : les clôtures
+        // d'unwind (dans abort_cost) SONT la liquidation du résiduel, plus
+        // de comm de liq séparée (audit marge 10/11).
+        let comm = crate::fees::comm_usd() / up_cad;
         // coût de débouclage par arête : med_rel x notional + comm —
         // la fixture a un spread relatif de 2 bp -> 2,0 $ + 0,40 $ comm
         let abort_cost = e.med[si] / ((bid_l + ask) * 0.5)

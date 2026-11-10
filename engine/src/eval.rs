@@ -63,6 +63,7 @@ impl Engine {
         for pi in 0..pt.len() {
             let mut rate = 1.0f64;
             let mut comm = 0.0f64;
+            let mut unwind = 0.0f64;
             let mut valid = true;
             for li in 0..pt.p_l[pi] as usize {
                 let e = pt.p_e[pi][li] as usize;
@@ -85,6 +86,14 @@ impl Engine {
                 } else {
                     1.0 / self.ask[si]
                 };
+                // clôture réelle de la position marge : re-traversée complète
+                // du spread de l'arête (audit marge 10/11 — mesuré live).
+                let mid = 0.5 * (self.bid[si] + self.ask[si]);
+                unwind += if mid.is_finite() && mid > 0.0 {
+                    (self.ask[si] - self.bid[si]) / mid * NOTIONAL_USD
+                } else {
+                    f64::NAN
+                };
             }
             if !valid {
                 continue;
@@ -97,11 +106,22 @@ impl Engine {
             };
             let end = pt.p_end[pi] as usize;
             let usd_out = qty0 * rate * up_liq[end];
-            let comm_fx = (comm + comm_liq[end]) * comm_scale;
-            if !(usd_out.is_finite() && up_s.is_finite() && comm_fx.is_finite()) {
+            // comm aller-retour : ouverture + clôture par jambe — les clôtures
+            // SONT la liquidation (pas d'ordre liq séparé, comm_liq omise).
+            let comm_rt = 2.0 * comm;
+            // la traversée de la liquidation modélisée (terminal != USD) est
+            // déjà pricée dans usd_out via up_liq -> retrancher ~1 traversée.
+            if let Some(sj) = self.usd_pair_si(end) {
+                let mid2 = 0.5 * (self.bid[sj] + self.ask[sj]);
+                if mid2.is_finite() && mid2 > 0.0 {
+                    unwind -= (self.ask[sj] - self.bid[sj]) / mid2 * NOTIONAL_USD;
+                }
+            }
+            let comm_fx = comm_rt * comm_scale;
+            if !(usd_out.is_finite() && up_s.is_finite() && comm_fx.is_finite() && unwind.is_finite()) {
                 continue;
             }
-            let net = usd_out - NOTIONAL_USD - comm_fx;
+            let net = usd_out - NOTIONAL_USD - comm_fx - unwind;
             if net > best_net {
                 best_net = net;
                 best_pi = pi;
@@ -197,13 +217,13 @@ mod tests {
         assert_eq!(pt.p_dir[r.path_idx][0], -1); // départ côté quote (JPY)
 
         // net attendu : qty0 JPY x (1/ask_reel) -> CAD liquidés exécutable
-        // à 1/ask(USDCAD) ; comm = jambe CADJPY (COMM/up[CAD]) + liq (COMM).
+        // à 1/ask(USDCAD) ; comm = 2x jambe CADJPY (ouverture + clôture
+        // marge). unwind = spread_CADJPY - spread_USDCAD = 0 (même half).
         let mid_cadjpy = ups[5] / ups[3] * 0.995;
         let ask = mid_cadjpy * 1.0001;
         let qty0 = crate::fees::NOTIONAL_USD / ups[3];
         let usd_out = qty0 * (1.0 / ask) / (1.35 * 1.0001);
-        let comm = crate::fees::comm_usd() / ups[5]
-            + crate::fees::comm_usd();
+        let comm = 2.0 * crate::fees::comm_usd() / ups[5];
         let expected = usd_out - crate::fees::NOTIONAL_USD - comm;
         assert!((r.net_usd - expected).abs() < 1e-6);
         assert!(r.net_usd > 0.0);

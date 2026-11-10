@@ -6,12 +6,13 @@
 //   - compte plat exige avant chaque sequence
 //   - une seule sequence a la fois, breaker sur echecs consecutifs
 //   - unwind immediat des jambes remplies sur abort
-//   - flatten des positions Og avant fin de session (21h Zurich -15min)
+//   - detection continue OTC lun-ven ; pause ven. >=21h Zurich (gap week-end)
 //
 // Execution : ExecuteMarketOrder synchrone (IOC natif : fill immediat
 //   top-of-book a 10K — MarketRangeOrder n'existe qu'en async dans
-//   cette API) — pas de latence wire donnees : detection et envoi dans
-//   le meme OnTick.
+//   cette API). Detection pilotee par Symbol.Tick sur les 28 paires
+//   (eval des qu'une quote bouge) — OnTick chart + Timer 250 ms en
+//   fallback : pas de latence wire donnees, detection et envoi lies.
 //
 // Journal : <JournalDir>/YYYY-MM-DD.jsonl — tick + opportunity +
 //   leg_send/leg_fill/leg_rej/settle (source de verite reconciliation).
@@ -100,6 +101,8 @@ public partial class OgTrade : Robot
     bool _busy = false;
     long _lastSeq = 0;   // 0, pas MinValue : t-MinValue overflowerait -> gate ferme a jamais
     int _consecFail = 0;
+    readonly Dictionary<string, int> _symIdx = new Dictionary<string, int>();
+    long _evtTick = 0, _evtSymTick = 0, _evtTimer = 0, _lastEvtLog = 0;
 
     StreamWriter _j = null; string _jDay = "";
 
@@ -143,6 +146,16 @@ public partial class OgTrade : Robot
         }
         if (!SelfTest())
         { Print("[OgTrade] FATAL: self-test divergent"); Stop(); return; }
+        // pilotage evenementiel : Symbol.Tick sur les 28 symboles (la quote
+        // bouge -> eval immediate), OnTick du chart + Timer 250 ms en
+        // fallback. Les callbacks d'un meme algo sont serialises par la
+        // plateforme ; _busy protege RunSeq quand meme.
+        for (int e = 0; e < NPAIR; e++)
+        {
+            _symIdx[FX[e]] = e;
+            _sym[e].Tick += OnSymbolTick;
+        }
+        Timer.Start(TimeSpan.FromMilliseconds(250));
         LogSys(string.Format(CultureInfo.InvariantCulture,
             "boot TRADE paths=2072 ddd={0} range_bp={1} warm={2} live={3}",
             DddMin, MaxRangeBp, WARMUP, Account.IsLive));
@@ -175,24 +188,30 @@ public partial class OgTrade : Robot
     }
 
     // ========================================================== tick
-    protected override void OnTick()
+    // une quote a change -> mise a jour carnet + warm-up ; retourne false si no-op
+    bool HandleQuote(int e, long t, double b, double a)
     {
-        long t = Now();
-        for (int e = 0; e < NPAIR; e++)
+        if (!(a > 0 && b > 0) || a < b) return false;
+        if (b == _bid[e] && a == _ask[e]) return false;
+        _bid[e] = b; _ask[e] = a; _lastChg[e] = t;
+        PushSpread(e, a - b);
+        LogTick(t, e, b, a);
+        if (_nTicks[e] < WARMUP)
         {
-            double b = _sym[e].Bid, a = _sym[e].Ask;
-            if (!(a > 0 && b > 0) || a < b) continue;
-            if (b == _bid[e] && a == _ask[e]) continue;
-            _bid[e] = b; _ask[e] = a; _lastChg[e] = t;
-            PushSpread(e, a - b);
-            LogTick(t, e, b, a);
-            if (_nTicks[e] < WARMUP)
-            {
-                _nTicks[e]++;
-                if (!_warmLogged && _nTicks.All(n => n >= WARMUP))
-                { _warmLogged = true; LogSys("warm-up complet (" + WARMUP + " ticks/symbole)"); }
-            }
+            _nTicks[e]++;
+            if (!_warmLogged && _nTicks.All(n => n >= WARMUP))
+            { _warmLogged = true; LogSys("warm-up complet (" + WARMUP + " ticks/symbole)"); }
         }
+        return true;
+    }
+
+    void RefreshAll(long t)
+    {   // resync depuis les proprietes live de la plateforme
+        for (int e = 0; e < NPAIR; e++) HandleQuote(e, t, _sym[e].Bid, _sym[e].Ask);
+    }
+
+    void TryDetect(long t)
+    {
         if (!_warmLogged || !InSession(t)) return;
         if (ShouldFlatten(t)) { FlattenOg(); return; }
         if (_busy || t - _lastSeq < MinSeqGapMs) return;
@@ -202,6 +221,37 @@ public partial class OgTrade : Robot
         {
             LogOpp(t, r.Value.Pi, r.Value.Net, r.Value.Ddd);
             RunSeq(r.Value.Pi, t);
+        }
+    }
+
+    void OnSymbolTick(SymbolTickEventArgs a)
+    {   // declenche sur CHAQUE tick symbole — la dislocation n'attend pas le chart
+        int e;
+        if (!_symIdx.TryGetValue(a.SymbolName, out e)) return;
+        _evtSymTick++;
+        HandleQuote(e, Now(), a.Bid, a.Ask);
+        TryDetect(Now());
+    }
+
+    protected override void OnTick()
+    {
+        _evtTick++;
+        long t = Now();
+        RefreshAll(t);
+        TryDetect(t);
+    }
+
+    protected override void OnTimer()
+    {   // heartbeat fallback 250 ms + stats d'evenements (preuve du canal actif)
+        _evtTimer++;
+        long t = Now();
+        RefreshAll(t);
+        TryDetect(t);
+        if (t - _lastEvtLog >= 300_000)
+        {
+            _lastEvtLog = t;
+            LogSys(string.Format(CultureInfo.InvariantCulture,
+                "evt onTick={0} symTick={1} timer={2}", _evtTick, _evtSymTick, _evtTimer));
         }
     }
 
@@ -344,9 +394,8 @@ public partial class OgTrade : Robot
             double pnl = 0.0; int unwound = 0; bool residOpen = false;
             foreach (var p in opened)
             {
-                double np = p.NetProfit;   // marque flottante pre-cloture
-                var r = CloseWithRetry(p, t0, np);
-                if (r) { unwound++; pnl += np; }
+                var r = CloseWithRetry(p, t0, out double realized);
+                if (r) { unwound++; pnl += realized; }
                 else residOpen = true;   // position restante : pnl non realise
             }
             _lastSeq = Now();
@@ -368,15 +417,22 @@ public partial class OgTrade : Robot
     }
 
     // Cloture IOC avec retry x3 (M6 debouclage) ; false si toujours ouverte.
-    bool CloseWithRetry(Position p, long t0, double np)
+    // PnL REALISE depuis History (commissions incluses — norme audit) ;
+    // fallback sur le NetProfit pre-cloture si l'entree n'est pas encore indexee.
+    bool CloseWithRetry(Position p, long t0, out double realized)
     {
-        string sn = p.SymbolName; double pv = p.VolumeInUnits; // capture avant cloture
+        string sn = p.SymbolName; double pv = p.VolumeInUnits; long pid = p.Id;
+        realized = 0.0;
         for (int k = 0; k < 3; k++)
         {
             var r = ClosePosition(p);
             if (r.IsSuccessful)
             {
-                LogLeg(t0, "unwind_fill", -1, sn, pv, np);
+                try { realized = p.NetProfit; } catch { realized = 0.0; }
+                int lo = Math.Max(0, History.Count - 30);
+                for (int i = History.Count - 1; i >= lo; i--)
+                    if (History[i].PositionId == pid) { realized = History[i].NetProfit; break; }
+                LogLeg(t0, "unwind_fill", -1, sn, pv, realized);
                 return true;
             }
             LogLeg(t0, "unwind_fail", -1, sn, pv, 0.0);
@@ -514,6 +570,9 @@ public partial class OgTrade : Robot
 
     protected override void OnStop()
     {
+        Timer.Stop();
+        for (int e = 0; e < NPAIR; e++)
+            if (_sym[e] != null) _sym[e].Tick -= OnSymbolTick;
         FlattenOg();   // ne jamais laisser de position Og ouverte a l'arret
         LogSys("stop");
         _j?.Dispose();

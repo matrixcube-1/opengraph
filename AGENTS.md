@@ -188,7 +188,7 @@
 - `NOTIONAL_USD = 10 000` — ddd_min scalé 2,66 → 0,27 $ (×10 vs #87@100K).
 - `COMM_PER_100K_USD = 4,00` — mesuré 3,63–4,00 $/côté sur 37 fills
   réels ; les calibrations #87/#985 (comm 3,00) sous-évaluent les frais.
-- `fresh_ms = 8 000` — cTrader est send-on-change : une quote inchangée
+- `fresh_ms = 8 000` — flux de ticks normal : pas de heartbeat, la derniere quote recue reste l'etat courant ; aux heures creuses les gaps inter-ticks atteignent des secondes par symbole. Une quote inchangée
   RESTE exécutable (dernière quote = état courant). p99 des gaps réels
   = 6,1 s → 8 s. À 909 ms la règle tuait ~41 % du temps les nœuds
   devises en flux calme (A/B replay : 909 → 0 épisode, ≥2000 →

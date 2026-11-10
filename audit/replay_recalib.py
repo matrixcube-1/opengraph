@@ -4,7 +4,7 @@
 
 Pont MC <-> live : le MC valide la méthode sur générateur ; ICI on mesure
 le taux d'opportunités RÉELLES qui survivent au coût d'aller-retour sur
-la vraie microstructure cTrader (send-on-change, spreads réels).
+la vraie microstructure cTrader (gaps inter-ticks reels, spreads reels).
 
 Params = conditions cBot réelles : fresh 8000, cap 1.76, scale 1.10,
 lat 350 ms (fill mesuré), tau 2.08 bp (MaxRange cBot).

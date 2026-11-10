@@ -20,7 +20,7 @@
 // Parametres declares dans config.json (source-generes : JournalDir,
 // FreshMs, SpreadCap, CommScale, DddMin) — economie mesuree 10/11 :
 // COMM=4,00 (fills reels 3,63-4,00), NOTIONAL=10K, FreshMs=8000
-// (send-on-change : derniere quote = etat courant ; p99 gaps 6,1 s),
+// (flux ticks sans heartbeat : derniere quote = etat courant ; p99 gaps 6,1 s mesure),
 // DddMin=0,27 (ddd 2,66@100K scale).
 
 using System.Collections.Generic;

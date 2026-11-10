@@ -17,7 +17,7 @@
 //   leg_send/leg_fill/leg_rej/settle (source de verite reconciliation).
 //
 // Parametres : economie mesuree 10/11 — comm 4,00/100K (0,40/jambe a
-//   10K), fresh 8000 (send-on-change), ddd 0,27 (2,66@100K scale).
+//   10K), fresh 8000 (gaps inter-ticks mesures), ddd 0,27 (2,66@100K scale).
 
 // Parametres via [Parameter] (mecanisme standard cAlgo — independant
 // du SourceGenerators) : MaxRangeBp = tol IOC 2,08 bp (3xtau, M7) ;

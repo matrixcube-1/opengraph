@@ -5,7 +5,7 @@ Réutilise le générateur falsifiable de mc_realiste (latent cohérent, edge
 uniquement par désynchronisation) mais aux paramètres MESURÉS live :
 
   lat_ms   = 350 (envoi -> fill observé sur le demo, 10/11)
-  fresh_ms = 8000 (send-on-change : p99 gap quotes ~6,1 s)
+  fresh_ms = 8000 (pas de heartbeat : p99 gap inter-ticks ~6,1 s mesure)
   comm     = 4,00 /100K/côté (fills réels — comm_per_side Rust par défaut)
   spread_cap/comm_scale/ddd_min : grille
 

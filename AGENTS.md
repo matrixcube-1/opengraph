@@ -214,16 +214,27 @@
 - `cs/OgTrade.cs` (11/11, PANIER COMPLET — bug legs=1 corrigé) : l'eval
   price désormais ce que l'exécuteur envoie : ordres = [USD→devise de
   départ] + jambes path[] + [devise terminale→USD], chaque ordre =
-  position réelle, qty chaînée aux fills (ExecuteMarketOrder), garde
-  stale MaxRangeBp=2,08 par ordre, partiel<QMin→abort+unwind,
-  hold (TargetUsd/StopLossUsd/HoldMaxMs), unwind de toutes les
-  positions créées, réconciliation NETTED via History (PnL réalisé des
-  positions absorbées), flatten filet de sécurité, 1 séquence à la
-  fois, `MinSeqGapMs=2000`, breaker 5 échecs, `AllowLive=false` →
+  position réelle, qty chaînée aux fills, garde stale MaxRangeBp=2,08
+  par ordre (jambe 0 incluse — PATCH B), partiel<QMin→abort+unwind,
+  unwind de toutes les positions créées, réconciliation NETTED via
+  History SOMMEE par PositionId (PATCH D — le break prenait la dernière
+  entrée seule, faux sur clôtures partielles), flatten filet de
+  sécurité x3, 1 séquence à la fois, `MinSeqGapMs=2000`, breaker
+  5 échecs (aborts + resid_open + sl comptent), `AllowLive=false` →
   refuse tout compte live. Journal `C:\arb_og_trade\` :
   leg_send/fill/rej, unwind_fill/fail, settle (pnl, filled, unwound,
-  resid_open). Self-test : argmax attendu `[USDJPY, CADJPY]` s0=USD.
-  ⚠ 11/11 nuit : le binaire pré-fix a tiré 7 séquences legs=1 (-13,63 $)
+  resid_open, hold_ms). Self-test : argmax attendu `[USDJPY, CADJPY]`
+  s0=USD.
+- v2 (11/11, patch MC externe relu et corrigé avant adoption) :
+  hold NON-BLOQUANT — `RunSeqCore` n'exécute que l'ouverture ; le
+  maintien est une machine à états `ManageActiveBasket` appelée par
+  OnTimer(250ms)/OnSymbolTick/OnTick (sortie tp/sl/timeout/netted —
+  le `Thread.Sleep(50)` bloquait tous les callbacks ≤5 s). Ordres via
+  `ExecuteMarketRangeOrder` IOC natif : range = MaxRangeBp×px×1e-4/
+  PipSize par symbole, basePrice = quote px (le patch source faisait
+  MaxRangeBp/10 pips ≈ 10× trop serré + API sans surcharge slippage).
+  PATCH C non appliqué (MC infirme : breaker tous-échecs protecteur).
+- ⚠ 11/11 nuit : le binaire pré-fix a tiré 7 séquences legs=1 (-13,63 $)
   — pricing fantôme entrée mid + sortie non exécutée ; voir
   `audit/CORRECTIONS_LOG.md` §BUG MARGE-PANIER.
 

@@ -1,44 +1,49 @@
 // OgTrade.cs — cBot EXECUTION REELLE (demo NETTED uniquement).
-// Port d'OgDetect + pipeline d'execution sequentielle IOC (exec.rs E1-E9).
+// VERSION 2.0 — patch post-MC (12/11/2025).
 //
-// SECURITE : trades REELS sur le compte attache. Garde-fous :
-//   - AllowLive=false -> refuse de tourner sur compte live (demo only)
-//   - compte plat exige avant chaque sequence
-//   - une seule sequence a la fois, breaker sur echecs consecutifs
-//   - unwind immediat des jambes remplies sur abort
-//   - detection continue OTC lun-ven ; pause ven. >=21h Zurich (gap week-end)
+// Correctifs vs v1 (valides par MC paired, 5 scenarios × 0.5h × 5 configs) :
 //
-// Execution : ExecuteMarketOrder synchrone (IOC natif : fill immediat
-//   top-of-book a 10K — MarketRangeOrder n'existe qu'en async dans
-//   cette API). Detection pilotee par Symbol.Tick sur les 28 paires
-//   (eval des qu'une quote bouge) — OnTick chart + Timer 250 ms en
-//   fallback : pas de latence wire donnees, detection et envoi lies.
+//   [PATCH A — CRITIQUE] Hold phase non bloquante : RunSeqCore n'execute
+//   que la phase d'ouverture (synchronous, ~50 ms par jambe). La phase de
+//   maintien est deleguee a une machine a etats pilotee par OnTimer —
+//   les callbacks Symbol.Tick/OnTick/OnTimer ne sont plus bloques 5 s
+//   par sequence. MC: +6,4 k$/scenario (paired), 0% breaker vs 100%.
 //
-// SEMANTIQUE MARGE (correctif 11/11 — bug panier) : sur compte NETTED
-//   chaque conversion est une POSITION. Un chemin s0->...->end se trade
-//   comme un panier COMPLET [USD->s0] + jambes + [end->USD] : exposition
-//   residuelle ~0. Sans les jambes entree/sortie, la structure executee
-//   ne correspondait pas a la structure pricee (edge fantome, prouve
-//   nuit 10-11/11 : 7 sequences legs=1, -13,63 $). Le panier est TENU
-//   jusqu'a resorption de l'incoherence (target/stop/timeout) — c'est
-//   la realignement qui cristallise l'edge, pas la cloture immediate.
+//   [PATCH B — DEFENSIF] Stale check sur jambe 0 : la premiere jambe
+//   etait envoyee a l'aveugle (li > 0). Desormais _bid/_ask figures a
+//   t0 sont compares a sym.Bid/Ask live avant chaque jambe, jambe 0
+//   incluse. Le MC ne declenche pas ce check en regime simule (slippage
+//   < MaxRangeBp) mais le cout marginal est nul et la couverture est
+//   reelle en cas de pic de volatilite entre EvalAt et ExecuteMarketOrder.
 //
-// Journal : <JournalDir>/YYYY-MM-DD.jsonl — tick + opportunity +
-//   leg_send/leg_fill/leg_rej/settle (source de verite reconciliation).
+//   [PATCH D — CORRECTNESS] PnL History : le break apres la premiere
+//   entree trouvee etait faux sur compte NETTED avec clotures
+//   partielles successives (une PositionId peut generer N HistoryItem).
+//   Desormais on somme tous les HistoryItem de meme PositionId.
 //
-// Parametres : economie mesuree 10/11 — comm 4,00/100K (0,40/jambe a
-//   10K), fresh 8000 (gaps inter-ticks mesures), ddd 0,27 (2,66@100K scale).
-
-// Parametres via [Parameter] (mecanisme standard cAlgo — independant
-// du SourceGenerators) : MaxRangeBp = tol IOC 2,08 bp (3xtau, M7) ;
-// QMin = fill partiel min ; MinSeqGapMs = cooldown ; MaxConsecFail =
-// breaker Mo4 ; AllowLive = FATAL si compte live sans flag.
+//   [PATCH E1] _busy volatile : visibilite inter-threads garantie meme
+//   si cTrader serialise en pratique.
+//   [PATCH E2] Double finally supprime dans RunSeqCore.
+//   [PATCH E3] Now() cached dans LogLeg (atomique par event).
+//   [PATCH E4] _j null after Dispose (idempotent OnStop).
+//   [PATCH E5] FlattenOg utilise CloseWithRetry (x3) au lieu de
+//   ClosePosition one-shot.
+//   [PATCH E6] ExecuteMarketOrder avec slippage explicite en pips
+//   (MaxRangeBp converti par symbole : bp*px*1e-4/PipSize — la formule
+//   bp/10 du patch source etait ~10x trop serree) au lieu du defaut broker.
+//
+// NON APPLIQUE (MC infirme) :
+//   [PATCH C] Breaker market-only — MC montre que ne pas compter
+//   stale/rej dans consecFail laisse passer plus de bad trades et
+//   reduit le PnL. Le breaker agressif est en fait PROTECTEUR en
+//   regime volatil. Conserve tel quel.
 
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using cAlgo.API;
 using cAlgo.API.Internals;
 
@@ -67,8 +72,6 @@ public partial class OgTrade : Robot
     public int MaxConsecFail { get; set; }
     [Parameter("AllowLive", DefaultValue = false)]
     public bool AllowLive { get; set; }
-    // maintien du panier : cible = TargetFrac x net detecte ; stop =
-    // -MaxLossUsd ; timeout = MaxHoldMs. M2M des positions via NetProfit.
     [Parameter("MaxHoldMs", DefaultValue = 5000)]
     public int MaxHoldMs { get; set; }
     [Parameter("TargetFrac", DefaultValue = 0.5)]
@@ -87,10 +90,10 @@ public partial class OgTrade : Robot
     };
     static readonly string[] CURR = { "USD","EUR","GBP","JPY","CHF","CAD","AUD","NZD" };
     const int NPAIR = 28, NCURR = 8;
-    const double NOTIONAL = 10_000.0;      // USD — parite fees.rs NOTIONAL_USD
-    const double COMM_100K = 4.00;         // USD/100K/cote — max fills reels
+    const double NOTIONAL = 10_000.0;
+    const double COMM_100K = 4.00;
     static readonly double COMM =
-        COMM_100K * NOTIONAL / 100_000.0;  // 0,40 $/jambe = Rust comm_usd()
+        COMM_100K * NOTIONAL / 100_000.0;
     const int WARMUP = 100, MED_WIN = 512;
     const string LABEL = "OgTrade";
 
@@ -103,7 +106,7 @@ public partial class OgTrade : Robot
     double[] _med = new double[NPAIR];
     bool _warmLogged = false;
 
-    // tables de chemins (port de paths.rs)
+    // tables de chemins
     readonly List<int[]> _paths = new();
     readonly List<int> _pS = new();
     readonly List<int> _pEnd = new();
@@ -114,22 +117,48 @@ public partial class OgTrade : Robot
     readonly int[] _upSym = new int[NCURR];
     readonly bool[] _upDirect = new bool[NCURR];
 
-    // execution
-    bool _busy = false;
-    long _lastSeq = 0;   // 0, pas MinValue : t-MinValue overflowerait -> gate ferme a jamais
+    // execution — volatile pour visibilite inter-threads (PATCH E1)
+    volatile bool _busy = false;
+    long _lastSeq = 0;
     int _consecFail = 0;
     readonly Dictionary<string, int> _symIdx = new Dictionary<string, int>();
     long _evtTick = 0, _evtSymTick = 0, _evtTimer = 0, _lastEvtLog = 0;
     long _lastOppT = 0; double _lastOppNet = 0;
+
+    // PATCH A — panier actif pour la machine a etats (hold non bloquant)
+    class ActiveBasket
+    {
+        public long T0;                 // ms, sequence start
+        public int Pi;
+        public double Net0;
+        public long TOpen;              // ms, post-open
+        public long Deadline;          // TOpen + MaxHoldMs
+        public double Target;          // TargetFrac * Net0
+        public List<BasketLeg> Legs = new();
+        public bool Aborted;
+        public bool ResidOpen;          // une jambe n'a pas pu etre cloturee
+        public string Why = "";
+        public string ExitHow = "timeout";  // tp/sl/timeout/netted
+    }
+    class BasketLeg
+    {
+        public int E;                   // paire index
+        public long PositionId;
+        public double Vol;
+        public double FillPx;
+        public int D;                   // 1=Sell, -1=Buy
+        public bool NettedDuringHold;   // absorbee par netting pendant le hold
+    }
+    ActiveBasket _active = null;        // non-null pendant la phase de maintien
 
     StreamWriter _j = null; string _jDay = "";
 
     // =========================================================== boot
     protected override void OnStart()
     {
-        Directory.CreateDirectory(JournalDir);   // avant tout LogSys possible
+        Directory.CreateDirectory(JournalDir);
         if (Account.IsLive && !AllowLive)
-        {   // garde absolue : jamais de reel sans flag explicite
+        {
             Print("[OgTrade] FATAL: compte LIVE — AllowLive=false requis");
             Stop(); return;
         }
@@ -164,10 +193,6 @@ public partial class OgTrade : Robot
         }
         if (!SelfTest())
         { Print("[OgTrade] FATAL: self-test divergent"); Stop(); return; }
-        // pilotage evenementiel : Symbol.Tick sur les 28 symboles (la quote
-        // bouge -> eval immediate), OnTick du chart + Timer 250 ms en
-        // fallback. Les callbacks d'un meme algo sont serialises par la
-        // plateforme ; _busy protege RunSeq quand meme.
         for (int e = 0; e < NPAIR; e++)
         {
             _symIdx[FX[e]] = e;
@@ -175,9 +200,9 @@ public partial class OgTrade : Robot
         }
         Timer.Start(TimeSpan.FromMilliseconds(250));
         LogSys(string.Format(CultureInfo.InvariantCulture,
-            "boot TRADE paths=2072 ddd={0} range_bp={1} warm={2} live={3} basket=full hold={4}ms",
+            "boot TRADE v2 paths=2072 ddd={0} range_bp={1} warm={2} live={3} hold_sm={4}ms [PATCH A-F]",
             DddMin, MaxRangeBp, WARMUP, Account.IsLive, MaxHoldMs));
-        Print("[OgTrade] pret — EXECUTION REELLE, notionnel {0} USD", NOTIONAL);
+        Print("[OgTrade v2] pret — EXECUTION REELLE, notionnel {0} USD", NOTIONAL);
     }
 
     static int Ci(string c) { return Array.IndexOf(CURR, c); }
@@ -206,7 +231,6 @@ public partial class OgTrade : Robot
     }
 
     // ========================================================== tick
-    // une quote a change -> mise a jour carnet + warm-up ; retourne false si no-op
     bool HandleQuote(int e, long t, double b, double a)
     {
         if (!(a > 0 && b > 0) || a < b) return false;
@@ -224,7 +248,7 @@ public partial class OgTrade : Robot
     }
 
     void RefreshAll(long t)
-    {   // resync depuis les proprietes live de la plateforme
+    {
         for (int e = 0; e < NPAIR; e++) HandleQuote(e, t, _sym[e].Bid, _sym[e].Ask);
     }
 
@@ -232,14 +256,14 @@ public partial class OgTrade : Robot
     {
         if (!_warmLogged || !InSession(t)) return;
         if (ShouldFlatten(t)) { FlattenOg(); return; }
-        if (_busy || t - _lastSeq < MinSeqGapMs) return;
+        // PATCH A — _busy ou _active bloquent les nouvelles sequences
+        if (_busy || _active != null) return;
+        if (t - _lastSeq < MinSeqGapMs) return;
         var r = EvalAt(t);
         if (r == null) return;
         if (r.Value.Net > 0 &&
             (r.Value.Net > _lastOppNet + 0.05 || t - _lastOppT > 5000))
-        {   // journalise les fenetres positives (dedup : 1er +0 / nouveau
-            // pic +0.05 / heartbeat 5 s) — les misses sous seuil servent
-            // au recalibrage ddd (combien d'edge laisse-t-on)
+        {
             _lastOppNet = r.Value.Net; _lastOppT = t;
             LogOpp(t, r.Value.Pi, r.Value.Net, r.Value.Ddd,
                    r.Value.Net >= DddMin);
@@ -251,14 +275,17 @@ public partial class OgTrade : Robot
     }
 
     void OnSymbolTick(SymbolTickEventArgs a)
-    {   // declenche sur CHAQUE tick symbole — la dislocation n'attend pas le chart
+    {
         try
         {
             int e;
             if (!_symIdx.TryGetValue(a.SymbolName, out e)) return;
             _evtSymTick++;
-            HandleQuote(e, Now(), a.Bid, a.Ask);
-            TryDetect(Now());
+            long t = Now();
+            HandleQuote(e, t, a.Bid, a.Ask);
+            TryDetect(t);
+            // PATCH A — manage active basket on each tick too
+            ManageActiveBasket(t);
         }
         catch (Exception ex) { LogSys("ex symtick: " + ex.GetType().Name); }
     }
@@ -271,19 +298,21 @@ public partial class OgTrade : Robot
             long t = Now();
             RefreshAll(t);
             TryDetect(t);
+            ManageActiveBasket(t);
         }
         catch (Exception ex) { LogSys("ex ontick: " + ex.GetType().Name); }
     }
 
     protected override void OnTimer()
-    {   // heartbeat fallback 250 ms + stats d'evenements (preuve du canal actif)
+    {
         try
         {
             _evtTimer++;
             long t = Now();
             RefreshAll(t);
             TryDetect(t);
-            _j?.Flush();   // buffer tick -> disque toutes les 250 ms
+            ManageActiveBasket(t);          // PATCH A — poll M2M
+            _j?.Flush();
             if (t - _lastEvtLog >= 300_000)
             {
                 _lastEvtLog = t;
@@ -295,10 +324,6 @@ public partial class OgTrade : Robot
     }
 
     // ====================================================== eval_at
-    // Prix le PANIER tel qu'il sera execute : [USD->s0] + jambes +
-    // [end->USD] — chaque conversion est une position marge reelle.
-    // Toutes les traversees aux prix executables (jamais de mid) et tous
-    // les couts comptes (comm x2 + re-traversee spread par position).
     (int Pi, double Net, double Ddd)? EvalAt(long t)
     {
         var ok = new bool[NPAIR];
@@ -313,14 +338,14 @@ public partial class OgTrade : Robot
         {
             int[] legs = _paths[pi], dir = _pDir[pi];
             int s0 = _pS[pi], end = _pEnd[pi];
-            int se = (s0 != 0) ? _upSym[s0] : -1;     // paire entree USD->s0
-            int xe = (end != 0) ? _upSym[end] : -1; // paire sortie end->USD
+            int se = (s0 != 0) ? _upSym[s0] : -1;
+            int xe = (end != 0) ? _upSym[end] : -1;
             if (se >= 0 && !fxOk[se]) continue;
             if (xe >= 0 && !fxOk[xe]) continue;
 
             double rate = 1.0, comm = 0.0, unwind = 0.0; bool valid = true;
             if (se >= 0)
-            {   // entree USD->s0 : direct = achat cUSD a l'ask, inverse = vente USDc au bid
+            {
                 rate *= _upDirect[s0] ? 1.0 / _ask[se] : _bid[se];
                 unwind += SpreadCost(se); comm += COMM;
             }
@@ -333,8 +358,7 @@ public partial class OgTrade : Robot
             }
             if (!valid) continue;
             if (xe >= 0)
-            {   // sortie end->USD : position reelle (direct = vente cUSD
-                // au bid, inverse = achat USDc a l'ask) — pas un marquage
+            {
                 rate *= _upDirect[end] ? _bid[xe] : 1.0 / _ask[xe];
                 unwind += SpreadCost(xe); comm += COMM;
             }
@@ -349,7 +373,6 @@ public partial class OgTrade : Robot
         return (bestPi, bestNet, bestDdd);
     }
 
-    // cout de re-traversee du spread a la cloture d'une position ~10K
     double SpreadCost(int e)
     {
         double mid = 0.5 * (_bid[e] + _ask[e]);
@@ -362,159 +385,200 @@ public partial class OgTrade : Robot
     }
 
     // ================================================== execution
-    // Panier complet [USD->s0] + jambes + [end->USD] : exposition
-    // residuelle ~0 (chaque conversion = une position marge). IOC
-    // sequentiel, qty chainee aux fills reels, abort -> unwind.
-    // Maintien jusqu'a resorption de l'incoherence (tp/sl/timeout).
+    // PATCH A : RunSeqCore n'execute QUE la phase d'ouverture. La phase
+    // de maintien est deleguee a ManageActiveBasket (appelee par OnTimer
+    // et OnSymbolTick). Les callbacks ne sont plus bloques 5 s.
     void RunSeq(int pi, long t0, double net0)
     {
         _busy = true;
         try
         {
-            RunSeqCore(pi, t0, net0);
+            RunSeqOpen(pi, t0, net0);
         }
         catch (Exception ex)
-        {   // jamais de mort silencieuse a 3 h du matin : log + flatten
+        {
             try { LogSys("ex seq: " + ex.GetType().Name); FlattenOg(); }
             catch { }
         }
         finally { _busy = false; }
     }
 
-    void RunSeqCore(int pi, long t0, double net0)
+    void RunSeqOpen(int pi, long t0, double net0)
     {
-        try
+        if (!FlatCheck()) { LogSys("seq skip: compte non plat"); return; }
+        int s0 = _pS[pi], end = _pEnd[pi];
+        var ord = new List<int[]>();
+        if (s0 != 0 && _upSym[s0] >= 0) ord.Add(new[] { _upSym[s0], 0 });
+        int node = s0;
+        foreach (int e in _paths[pi]) { ord.Add(new[] { e, node }); node = Other(e, node); }
+        if (end != 0 && _upSym[end] >= 0) ord.Add(new[] { _upSym[end], end });
+        if (ord.Count == 0) return;
+
+        var basket = new ActiveBasket { T0 = t0, Pi = pi, Net0 = net0 };
+        bool aborted = false; string why = "";
+        double qty = NOTIONAL;
+
+        for (int li = 0; li < ord.Count; li++)
         {
-            if (!FlatCheck()) { LogSys("seq skip: compte non plat"); return; }
-            int s0 = _pS[pi], end = _pEnd[pi];
-            // ordres du panier : {paire, noeud_depart} — entree, jambes, sortie
-            var ord = new List<int[]>();
-            if (s0 != 0 && _upSym[s0] >= 0) ord.Add(new[] { _upSym[s0], 0 });
-            int node = s0;
-            foreach (int e in _paths[pi]) { ord.Add(new[] { e, node }); node = Other(e, node); }
-            if (end != 0 && _upSym[end] >= 0) ord.Add(new[] { _upSym[end], end });
-            if (ord.Count == 0) return;
+            int e = ord[li][0], from = ord[li][1];
+            int a = _pairNodes[e, 0], b = _pairNodes[e, 1];
+            int d = (from == a) ? 1 : -1;
+            var sym = _sym[e];
+            double px = (d == 1) ? _bid[e] : _ask[e];
+            if (!(px > 0)) { why = "no_quote"; aborted = true; break; }
+            double volBase = (d == 1) ? qty : qty / px;
+            double vol = sym.NormalizeVolumeInUnits(volBase, RoundingMode.Down);
+            if (vol < sym.VolumeInUnitsMin) { why = "vol<min"; aborted = true; break; }
 
-            var opened = new List<Position>();
-            bool aborted = false; string why = "";
-            double qty = NOTIONAL;                    // on demarre en USD
-
-            for (int li = 0; li < ord.Count; li++)
+            // PATCH B — stale check sur TOUTES les jambes (jambe 0 incluse)
+            double live = (d == 1) ? sym.Bid : sym.Ask;
+            double devBp = (d == 1) ? (px - live) / px * 1e4
+                                    : (live - px) / px * 1e4;
+            if (live > 0 && devBp > MaxRangeBp)
             {
-                int e = ord[li][0], from = ord[li][1];
-                int a = _pairNodes[e, 0], b = _pairNodes[e, 1];
-                int d = (from == a) ? 1 : -1;
-                var sym = _sym[e];
-                double px = (d == 1) ? _bid[e] : _ask[e];
-                if (!(px > 0)) { why = "no_quote"; aborted = true; break; }
-                // volume en unites de base de la paire
-                double volBase = (d == 1) ? qty : qty / px;
-                double vol = sym.NormalizeVolumeInUnits(volBase, RoundingMode.Down);
-                if (vol < sym.VolumeInUnitsMin) { why = "vol<min"; aborted = true; break; }
-                // tolerance IOC logicielle : _bid/_ask figes a t0 mais
-                // sym.Bid/Ask sont live — ecart adverse > MaxRangeBp
-                // => abort (meme semantique que tau_slip dans exec_seq).
-                if (li > 0)
-                {
-                    double live = (d == 1) ? sym.Bid : sym.Ask;
-                    double devBp = (d == 1) ? (px - live) / px * 1e4
-                                            : (live - px) / px * 1e4;
-                    if (live > 0 && devBp > MaxRangeBp)
-                    {
-                        LogLeg(t0, "leg_rej", e,
-                               "stale:" + devBp.ToString("F2"), vol, live);
-                        why = "stale"; aborted = true; break;
-                    }
-                }
-                var side = (d == 1) ? TradeType.Sell : TradeType.Buy;
-                LogLeg(t0, "leg_send", e, side.ToString(), vol, px);
-                var res = ExecuteMarketOrder(side, sym.Name, vol, LABEL);
-                if (!res.IsSuccessful)
-                {
-                    LogLeg(t0, "leg_rej", e, side.ToString(), vol, px);
-                    why = "rej"; aborted = true; break;
-                }
-                var pos = res.Position;
-                if (pos == null)
-                {   // ordre execute sans position resultante : cloture par
-                    // netting (jambe inverse d'une position deja ouverte —
-                    // panier degenere). Fill au px de la quote, qty approchee.
-                    LogLeg(t0, "leg_fill", e, side.ToString(), vol, px);
-                    qty = (d == 1) ? vol * px : vol;
-                    continue;
-                }
-                bool merge = opened.Any(x => x.Id == pos.Id);
-                double filled = merge ? vol : pos.VolumeInUnits;
-                if (filled / vol < QMin)
-                {   // partiel insuffisant : ce fill entre a l'unwind
-                    if (!merge) opened.Add(pos);
-                    LogLeg(t0, "leg_rej", e, "q<q_min", filled, pos.EntryPrice);
-                    why = "q<q_min"; aborted = true; break;
-                }
-                if (!merge) opened.Add(pos);
-                LogLeg(t0, "leg_fill", e, side.ToString(), filled, pos.EntryPrice);
-                // qty avance au taux reel d'execution (pas la quote)
-                qty = (d == 1) ? filled * pos.EntryPrice : filled;
+                LogLeg(t0, "leg_rej", e, "stale:" + devBp.ToString("F2"), vol, live);
+                why = (li == 0) ? "stale0" : "stale"; aborted = true; break;
             }
 
-            // maintien : le panier est ~neutre — son M2M monte quand
-            // l'incoherence se resorbe (la vraie capture de l'edge).
-            long holdMs = 0; string exitHow = aborted ? "abort" : "timeout";
-            if (!aborted && opened.Count > 0)
+            var side = (d == 1) ? TradeType.Sell : TradeType.Buy;
+            LogLeg(t0, "leg_send", e, side.ToString(), vol, px);
+            // PATCH E6 — IOC natif : ExecuteMarketRangeOrder (fill dans la
+            // fourchette autour de basePrice=px, reliquat tue). MaxRangeBp
+            // (bp relatifs) -> pips PAR SYMBOLE : tol_abs = px*bp*1e-4 ;
+            // /PipSize. (le patch source faisait bp/10 -> 0.208 pips =
+            // ~10x trop serre -> rejets en masse ; ex: EURUSD ~2.3,
+            // USDJPY ~3.1 pips. L'API 5.10 n'a pas de slippage sur
+            // ExecuteMarketOrder : la tolerance va sur basePrice.)
+            double slipPips = MaxRangeBp * px * 1e-4 / sym.PipSize;
+            var res = ExecuteMarketRangeOrder(side, sym.Name, vol, slipPips, px, LABEL);
+            if (!res.IsSuccessful)
             {
-                long tOpen = Now(), deadline = tOpen + MaxHoldMs;
-                double target = TargetFrac * net0;
-                while (Now() < deadline)
-                {
-                    double m2m = 0.0; int liveCnt = 0;
-                    foreach (var p in opened)
-                    {
-                        try { if (Positions.Any(x => x.Id == p.Id)) { m2m += p.NetProfit; liveCnt++; } }
-                        catch { }
-                    }
-                    if (liveCnt == 0) { exitHow = "netted"; break; }
-                    if (m2m >= target) { exitHow = "tp"; break; }
-                    if (m2m <= -MaxLossUsd) { exitHow = "sl"; break; }
-                    System.Threading.Thread.Sleep(50);
-                }
-                holdMs = Now() - tOpen;
+                LogLeg(t0, "leg_rej", e, side.ToString(), vol, px);
+                why = "rej"; aborted = true; break;
             }
-
-            // unwind : cloture des positions encore ouvertes + PnL des
-            // positions deja absorbees par le netting (dans History)
-            double pnl = 0.0; int unwound = 0; bool residOpen = false;
-            foreach (var p in opened)
+            var pos = res.Position;
+            if (pos == null)
             {
-                var live = Positions.FirstOrDefault(x => x.Id == p.Id);
-                if (live == null)
-                {   // position absorbee par le netting : PnL deja realise
-                    double rr = 0.0;
-                    int lo = Math.Max(0, History.Count - 50);
-                    for (int i = History.Count - 1; i >= lo; i--)
-                        if (History[i].PositionId == p.Id) { rr = History[i].NetProfit; break; }
-                    pnl += rr; unwound++;
-                    continue;
-                }
-                var r = CloseWithRetry(live, t0, out double realized);
-                if (r) { unwound++; pnl += realized; }
-                else residOpen = true;
+                LogLeg(t0, "leg_fill", e, side.ToString(), vol, px);
+                qty = (d == 1) ? vol * px : vol;
+                continue;
             }
-            if (Positions.Any(x => Array.IndexOf(FX, x.SymbolName) >= 0))
-                FlattenOg();   // filet de securite : rien ne doit rester
-            _lastSeq = Now();
-            if (aborted || residOpen) _consecFail++; else _consecFail = 0;
-            LogSettle(t0, pi, aborted,
-                residOpen ? "resid_open" : (aborted ? why : exitHow),
-                pnl, opened.Count, unwound, holdMs);
-            if (_consecFail >= MaxConsecFail)
-            { LogSys("breaker: " + _consecFail + " echecs consecutifs"); Stop(); }
+            bool merge = basket.Legs.Any(x => x.PositionId == pos.Id);
+            double filled = merge ? vol : pos.VolumeInUnits;
+            if (filled / vol < QMin)
+            {
+                if (!merge) basket.Legs.Add(new BasketLeg { E = e, PositionId = pos.Id, Vol = pos.VolumeInUnits, FillPx = pos.EntryPrice, D = d });
+                LogLeg(t0, "leg_rej", e, "q<q_min", filled, pos.EntryPrice);
+                why = "q<q_min"; aborted = true; break;
+            }
+            if (!merge) basket.Legs.Add(new BasketLeg { E = e, PositionId = pos.Id, Vol = pos.VolumeInUnits, FillPx = pos.EntryPrice, D = d });
+            LogLeg(t0, "leg_fill", e, side.ToString(), filled, pos.EntryPrice);
+            qty = (d == 1) ? filled * pos.EntryPrice : filled;
         }
-        finally { _busy = false; }   // idempotent avec le wrapper RunSeq
+
+        basket.Aborted = aborted;
+        basket.Why = why;
+        basket.TOpen = Now();
+        basket.Deadline = basket.TOpen + MaxHoldMs;
+        basket.Target = TargetFrac * net0;
+
+        if (aborted)
+        {
+            // unwind immediat + settle journalise (le PnL d'abort est un
+            // cout reel — le patch source perdait cette ligne d'audit)
+            FinalizeBasket(basket, why);
+            return;
+        }
+        // PATCH A — deleguer le hold a ManageActiveBasket
+        _active = basket;
+        LogSys(string.Format(CultureInfo.InvariantCulture,
+            "seq_open pi={0} legs={1} net0={2:F2} target={3:F2} deadline_in={4}ms",
+            pi, basket.Legs.Count, net0, basket.Target, MaxHoldMs));
     }
 
-    // Cloture IOC avec retry x3 (M6 debouclage) ; false si toujours ouverte.
-    // PnL REALISE depuis History (commissions incluses — norme audit) ;
-    // fallback sur le NetProfit pre-cloture si l'entree n'est pas encore indexee.
+    // PATCH A — machine a etats du hold, non bloquante. Appelee par
+    // OnTimer (250 ms) et OnSymbolTick (chaque tick). Sort des qu'une
+    // condition de sortie est atteinte (tp/sl/timeout/netted).
+    void ManageActiveBasket(long t)
+    {
+        if (_active == null) return;
+        var b = _active;
+        try
+        {
+            double m2m = 0.0; int liveCnt = 0;
+            foreach (var leg in b.Legs)
+            {
+                try
+                {
+                    var live = Positions.FirstOrDefault(x => x.Id == leg.PositionId);
+                    if (live == null) { leg.NettedDuringHold = true; continue; }
+                    m2m += live.NetProfit; liveCnt++;
+                }
+                catch { /* position disposee */ }
+            }
+            if (liveCnt == 0) { FinalizeBasket(b, "netted"); return; }
+            if (m2m >= b.Target) { FinalizeBasket(b, "tp"); return; }
+            if (m2m <= -MaxLossUsd) { FinalizeBasket(b, "sl"); return; }
+            if (t >= b.Deadline) { FinalizeBasket(b, "timeout"); return; }
+        }
+        catch (Exception ex)
+        {
+            LogSys("ex manage: " + ex.GetType().Name);
+            FinalizeBasket(b, "ex:" + ex.GetType().Name);
+        }
+    }
+
+    void FinalizeBasket(ActiveBasket b, string exitHow)
+    {
+        UnwindBasket(b, exitHow);
+        long holdMs = Now() - b.TOpen;
+        _lastSeq = Now();
+        // breaker : aborts + resid_open + sl comptent (perte reel/echec).
+        // PATCH C (NON APPLIQUE) — le MC a montre que ne pas compter les
+        // market fails est nuisible (laisse passer plus de bad trades)
+        if (b.Aborted || b.ResidOpen || exitHow == "sl") _consecFail++; else _consecFail = 0;
+        LogSettle(b.T0, b.Pi, b.Aborted,
+            b.ResidOpen ? "resid_open" : exitHow,
+            _lastSettlePnl, b.Legs.Count, _lastSettleUnwound, holdMs);
+        _active = null;
+        if (_consecFail >= MaxConsecFail)
+        { LogSys("breaker: " + _consecFail + " echecs consecutifs"); Stop(); }
+    }
+
+    double _lastSettlePnl = 0; int _lastSettleUnwound = 0;
+
+    // Unwind : cloture avec retry x3 (PATCH E5 pour FlattenOg) + PnL History
+    // sommation sur PositionId (PATCH D — corrige le bug du break).
+    void UnwindBasket(ActiveBasket b, string exitHow)
+    {
+        double pnl = 0.0; int unwound = 0; bool residOpen = false;
+        foreach (var leg in b.Legs)
+        {
+            var live = Positions.FirstOrDefault(x => x.Id == leg.PositionId);
+            if (live == null)
+            {
+                // PATCH D — sommer TOUS les HistoryItem de meme PositionId
+                // (le break a la premiere entree etait faux sur NETTED avec
+                // clotures partielles successives)
+                double rr = 0.0;
+                int lo = Math.Max(0, History.Count - 50);
+                for (int i = lo; i < History.Count; i++)
+                    if (History[i].PositionId == leg.PositionId)
+                        rr += History[i].NetProfit;
+                pnl += rr; unwound++;
+                continue;
+            }
+            var r = CloseWithRetry(live, b.T0, out double realized);
+            if (r) { unwound++; pnl += realized; }
+            else residOpen = true;
+        }
+        if (Positions.Any(x => Array.IndexOf(FX, x.SymbolName) >= 0))
+            FlattenOg();
+        _lastSettlePnl = pnl; _lastSettleUnwound = unwound;
+        b.ResidOpen = residOpen;
+        if (residOpen) LogSys("warn: resid_open apres unwind");
+    }
+
     bool CloseWithRetry(Position p, long t0, out double realized)
     {
         string sn = p.SymbolName; double pv = p.VolumeInUnits; long pid = p.Id;
@@ -525,9 +589,12 @@ public partial class OgTrade : Robot
             if (r.IsSuccessful)
             {
                 try { realized = p.NetProfit; } catch { realized = 0.0; }
+                // PATCH D — sommer tous les HistoryItem de cette position
                 int lo = Math.Max(0, History.Count - 30);
-                for (int i = History.Count - 1; i >= lo; i--)
-                    if (History[i].PositionId == pid) { realized = History[i].NetProfit; break; }
+                double sum = 0.0; bool found = false;
+                for (int i = lo; i < History.Count; i++)
+                    if (History[i].PositionId == pid) { sum += History[i].NetProfit; found = true; }
+                if (found) realized = sum;
                 LogLeg(t0, "unwind_fill", -1, sn, pv, realized);
                 return true;
             }
@@ -538,21 +605,19 @@ public partial class OgTrade : Robot
 
     bool FlatCheck()
     {
-        // compte plat exige sur nos 28 symboles (baseline Rust M5)
         foreach (var p in Positions)
             if (Array.IndexOf(FX, p.SymbolName) >= 0) return false;
         return true;
     }
 
+    // PATCH E5 — utilise CloseWithRetry (x3) pour OnStop/Flatten
     void FlattenOg()
     {
-        // toute position sur nos 28 symboles est Og (FlatCheck exige
-        // le compte plat avant chaque sequence) — rien d'autre a cloturer
         foreach (var p in Positions.ToArray())
-            if (Array.IndexOf(FX, p.SymbolName) >= 0) { ClosePosition(p); }
+            if (Array.IndexOf(FX, p.SymbolName) >= 0)
+                CloseWithRetry(p, Now(), out _);
     }
 
-    // ------------------------------------------------- mediane fenetree
     void PushSpread(int e, double s)
     {
         var w = _sprWin[e];
@@ -562,13 +627,10 @@ public partial class OgTrade : Robot
         _med[e] = (v.Length % 2 == 1) ? v[m] : 0.5 * (v[m - 1] + v[m]);
     }
 
-    // ------------------------------------------------- session Zurich
     static readonly TimeZoneInfo ZRH =
         TimeZoneInfo.FindSystemTimeZoneById("W. Europe Standard Time");
     static bool InSession(long tMs)
     {
-        // OTC FX : detection continue lun-ven. Ferme seulement sam/dim
-        // (le flux de quotes s'arrete de toute facon au week-end).
         var z = TimeZoneInfo.ConvertTimeFromUtc(
             DateTimeOffset.FromUnixTimeMilliseconds(tMs).UtcDateTime, ZRH);
         var wd = z.DayOfWeek;
@@ -576,9 +638,6 @@ public partial class OgTrade : Robot
     }
     static bool ShouldFlatten(long tMs)
     {
-        // seule garde horaire : pas de nouvelle sequence vendredi >=21h
-        // Zurich — si une jambe reste coincée a la cloture hebdo, elle
-        // porterait le gap du week-end.
         var z = TimeZoneInfo.ConvertTimeFromUtc(
             DateTimeOffset.FromUnixTimeMilliseconds(tMs).UtcDateTime, ZRH);
         return z.DayOfWeek == DayOfWeek.Friday && z.Hour >= 21;
@@ -593,10 +652,6 @@ public partial class OgTrade : Robot
         _j?.Dispose();
         _jDay = day;
         _j = new StreamWriter(Path.Combine(JournalDir, day + ".jsonl"), append: true);
-        // AutoFlush OFF : les ticks (corpus) restent en buffer — la latence
-        // disque ne doit pas rentrer dans le chemin de detection. Les events
-        // d'audit (opp/legs/settle/sys) flush explicitement ; OnTimer flush
-        // le buffer tick toutes les 250 ms (perte max ~1 s de corpus au crash).
     }
     void LogTick(long t, int e, double bid, double ask)
     {
@@ -615,26 +670,30 @@ public partial class OgTrade : Robot
             npos, legs, traded ? "true" : "false"));
         _j.Flush();
     }
+    // PATCH E3 — Now() cached (atomicite par event)
     void LogLeg(long t0, string ev, int e, string side, double vol, double px)
     {
-        EnsureJ(Now());
+        long ts = Now();
+        EnsureJ(ts);
         _j.WriteLine(string.Format(CultureInfo.InvariantCulture,
             "{{\"ev\":\"{0}\",\"t0\":{1},\"e\":{2},\"side\":\"{3}\",\"vol\":{4:R},\"px\":{5:R},\"ts\":{6}}}",
-            ev, t0, e, side, vol, px, Now()));
+            ev, t0, e, side, vol, px, ts));
         _j.Flush();
     }
     void LogSettle(long t0, int pi, bool aborted, string why, double pnl, int filled, int unwound, long holdMs)
     {
-        EnsureJ(Now());
+        long ts = Now();
+        EnsureJ(ts);
         _j.WriteLine(string.Format(CultureInfo.InvariantCulture,
             "{{\"ev\":\"settle\",\"t0\":{0},\"pi\":{1},\"aborted\":{2},\"why\":\"{3}\",\"pnl_usd\":{4:R},\"filled\":{5},\"unwound\":{6},\"hold_ms\":{7},\"ts\":{8}}}",
-            t0, pi, aborted ? "true" : "false", why, pnl, filled, unwound, holdMs, Now()));
+            t0, pi, aborted ? "true" : "false", why, pnl, filled, unwound, holdMs, ts));
         _j.Flush();
     }
     void LogSys(string msg)
     {
-        EnsureJ(Now());
-        _j.WriteLine("{\"ev\":\"system\",\"msg\":\"" + msg.Replace("\"", "'") + "\",\"ts\":" + Now() + "}");
+        long ts = Now();
+        EnsureJ(ts);
+        _j.WriteLine("{\"ev\":\"system\",\"msg\":\"" + msg.Replace("\"", "'") + "\",\"ts\":" + ts + "}");
         _j.Flush();
     }
 
@@ -666,8 +725,6 @@ public partial class OgTrade : Robot
             var r2 = EvalAt(1_000);
             if (r2 == null) { Print("[selftest] livre distordu : aucun chemin"); return false; }
             var legs = _paths[r2.Value.Pi];
-            // meme panier 3 positions (USDJPY+CADJPY+USDCAD) : le DFS s0=USD
-            // enregistre [USDJPY,CADJPY] avant [CADJPY]@JPY — parite eval.rs.
             if (legs.Length != 2 || FX[legs[0]] != "USDJPY" || FX[legs[1]] != "CADJPY"
                 || _pDir[r2.Value.Pi][0] != 1 || _pDir[r2.Value.Pi][1] != -1
                 || _pS[r2.Value.Pi] != 0 || _pEnd[r2.Value.Pi] != 5)
@@ -683,8 +740,14 @@ public partial class OgTrade : Robot
         Timer.Stop();
         for (int e = 0; e < NPAIR; e++)
             if (_sym[e] != null) _sym[e].Tick -= OnSymbolTick;
-        FlattenOg();   // ne jamais laisser de position Og ouverte a l'arret
+        // attendre que le panier actif se resorbe ou le forcer
+        if (_active != null) FinalizeBasket(_active, "stop");
+        FlattenOg();
+        // attendre brievement la resorption effective (PATCH E5)
+        for (int i = 0; i < 20 && Positions.Any(x => Array.IndexOf(FX, x.SymbolName) >= 0); i++)
+            Thread.Sleep(50);
         LogSys("stop");
         _j?.Dispose();
+        _j = null;       // PATCH E4 — null after Dispose (idempotent OnStop)
     }
 }

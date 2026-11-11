@@ -238,6 +238,22 @@
   — pricing fantôme entrée mid + sortie non exécutée ; voir
   `audit/CORRECTIONS_LOG.md` §BUG MARGE-PANIER.
 
+
+## MC ticks reels cTrader (11/11/2026)
+- audit/mc_ctrader_reel.py replaye le journal live (C:rb_og_trade\*.jsonl,
+  451 705 ticks / 14,25 h) via Engine.live + on_tick — panier complet.
+- Verdict : **0 opportunite net>0 sur le feed reel overnight** (meilleur net -0,94 $ ;
+  393k evals < -2 $). Feed retail coherent a ~1 $ — sous le hurdle panier
+  (~2,4 $ comm + 4-6 $ spread/unwind a 10 K). Latence 280->3 ms et comm
+  0,40->0,10 sans effet : pas d'edge a capturer sur ce venue.
+- Falsification OK : injection dislocation CADJPY x0.995/60 s -> 500 opp
+  >=0,4 $, max +47,24 $ (detecteur sain). Live post-patch : 0 opportunity
+  journalisee (coherent). Live pre-patch : 29 opp legs=1 net<=0,17 $
+  traded:false = artefacts modele fantome.
+- Rapport : MC/MC_CTRADER_REEL.md, donnees : MC/mc_ctrader_reel_results.json.
+- Consequence : la richesse en desynchronisations est venue-dependante —
+  argument UAT FIX ; sur feed cTrader retail aucune fenetre executable a 10 K.
+
 ## Nouveau broker ECN négocié (utilisateur, 02/11/2026) — chemin prioritaire
 - **Commission 2 $ A/R/100 K** (1 $/côté) — vs 3 $/côté IC : économie ~×2
   et épisodes détectés ×3,3 sur le même corpus (A/B dans

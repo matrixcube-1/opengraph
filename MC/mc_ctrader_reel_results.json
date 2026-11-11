@@ -1,0 +1,86 @@
+{
+  "source": "C:\\arb_og_trade\\*.jsonl",
+  "n_ticks": 451705,
+  "span_h": 14.25105638888889,
+  "n_rep": 500,
+  "params": {
+    "fresh_ms": 8000.0,
+    "spread_cap": 1.76,
+    "comm_scale": 1.1,
+    "ddd_min": 0.4,
+    "comm_side": 0.4,
+    "tau_slip_bp": 2.08,
+    "q_min": 0.5,
+    "min_seq_gap_ms": 2000,
+    "max_hold_ms": 5000,
+    "warmup": 100
+  },
+  "scenarios": {
+    "ctrader_lat280": {
+      "summary": {
+        "evals": 292703,
+        "cands": 259114,
+        "pos_evals": 0,
+        "consumed": 0,
+        "opps_sent": 0,
+        "execs": 0,
+        "abort_rate": 0.0,
+        "res_counts": {},
+        "wr": 0.0,
+        "pnl_mean": 0.0,
+        "p05": 0.0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "pnl_per_hour": 0.0,
+        "gap_mean": 0.0,
+        "opp_per_hour": 0.0
+      },
+      "opps": []
+    },
+    "fixlike_lat3": {
+      "summary": {
+        "evals": 292703,
+        "cands": 259114,
+        "pos_evals": 0,
+        "consumed": 0,
+        "opps_sent": 0,
+        "execs": 0,
+        "abort_rate": 0.0,
+        "res_counts": {},
+        "wr": 0.0,
+        "pnl_mean": 0.0,
+        "p05": 0.0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "pnl_per_hour": 0.0,
+        "gap_mean": 0.0,
+        "opp_per_hour": 0.0
+      },
+      "opps": []
+    }
+  },
+  "elapsed_s": 58.11939072608948,
+  "controls": {
+    "net_scan": {
+      "best_net_usd": -0.937,
+      "evals_total": 292703,
+      "dist": {
+        "lt_-2": 393286,
+        "-2_to_0": 11
+      },
+      "note": "best net over ALL evals on real feed = -0.937$ -> zero exploitable edge"
+    },
+    "inject_dislocation": {
+      "method": "CADJPY bid/ask x0.995 pendant 60s (t0+3h), meme code replay",
+      "opps_ge_0.4": 500,
+      "max_net_usd": 47.24,
+      "verdict": "PASS - detecteur tire quand incoherence reelle existe"
+    },
+    "live_bot_crosscheck": {
+      "post_patch_opportunities": 0,
+      "pre_patch_opportunities": 29,
+      "pre_patch_pattern": "legs=1, net<=0.17$, traded:false -> artefacts modele fantome"
+    },
+    "interpretation": "feed retail cTrader overnight coherent a ~1$ pres; hurdle panier complet ~2.4$ comm + 4-6$ spread/unwind a 10K -> aucune fenetre executable"
+  }
+}

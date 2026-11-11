@@ -254,6 +254,22 @@
 - Consequence : la richesse en desynchronisations est venue-dependante —
   argument UAT FIX ; sur feed cTrader retail aucune fenetre executable a 10 K.
 
+
+## Optuna v5 sur ticks reels cTrader (11/11/2026)
+- audit/optuna_ctrader_reel.py : TPE multivarie + Random, contraintes
+  v5 trial.set_constraint (min_trades>=10, abort<=30%), split temporel
+  (in-sample 02+03/11 = steps MedianPruner, holdout 04/11 evalue UNE fois),
+  SQLite optuna_ctrader_reel.db, PedAnova post-study.
+- 405 essais -> **region faisable vide : plafond dur 5 trades/2j**
+  (dist TPE 273x0/23x3/5x4/2x5 ; Random 79x0/13x2/8x3/2x4).
+  Les seuls combos a 5 : ddd_min~0.15-0.18 + fresh 16-19s + 40-60% aborts.
+- Params live en holdout : -3,13 $ / 1 trade (eval unique, aucune
+  selection sur holdout). PedAnova : q_min/spread_cap/fresh_ms modulent
+  le NB de trades, pas le profit (aucun essai rentable).
+- Verdict : le feed reel ne contient pas assez de moments executables —
+  non-viabilite structurelle a 10K sur ce venue, pas un probleme de
+  reglage. Rapport : MC/OPTUNA_CTRADER_REEL.md.
+
 ## Nouveau broker ECN négocié (utilisateur, 02/11/2026) — chemin prioritaire
 - **Commission 2 $ A/R/100 K** (1 $/côté) — vs 3 $/côté IC : économie ~×2
   et épisodes détectés ×3,3 sur le même corpus (A/B dans

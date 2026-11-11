@@ -1,0 +1,56 @@
+{
+ "db": "sqlite:///C:\\Users\\EVROSIS\\OneDrive\\Desktop\\Arbitrage_FX\\audit\\optuna_ctrader_reel.db",
+ "elapsed_s": 2742.351839542389,
+ "in_sample": [
+  "C:\\arb_cs_journal\\2026-11-02.jsonl",
+  "C:\\arb_cs_journal\\2026-11-03.jsonl"
+ ],
+ "holdout": [
+  "C:\\arb_cs_journal\\2026-11-04.jsonl"
+ ],
+ "oos2": "C:\\arb_og_trade\\2026-11-*.jsonl",
+ "studies": {
+  "tpe": {
+   "n_trials": 303,
+   "n_feasible": 0,
+   "feasible": []
+  },
+  "rand": {
+   "n_trials": 102,
+   "n_feasible": 0,
+   "feasible": []
+  }
+ },
+ "best": null,
+ "pedanova": {
+  "q_min": 0.2819754144623349,
+  "spread_cap": 0.2572443298695871,
+  "fresh_ms": 0.21816473547108803,
+  "tau_slip_bp": 0.19484279298431417,
+  "ddd_min": 0.034753316686078534,
+  "comm_scale": 0.013019410526597285
+ },
+ "live_holdout_1104": {
+  "params": "LIVE_DEFAULTS",
+  "pnl": -3.13,
+  "trades": 1,
+  "aborts": 0,
+  "note": "eval unique holdout \u2014 pas de selection sur holdout (aucun essai faisable)"
+ },
+ "landscape": {
+  "tpe": {
+   "0": 273,
+   "3": 23,
+   "4": 5,
+   "5": 2
+  },
+  "rand": {
+   "0": 79,
+   "2": 13,
+   "3": 8,
+   "4": 2
+  },
+  "max_trades_space": 5,
+  "note": "plafond dur 5 trades/2j in-sample sur tout l espace; les 2 combos a 5 exigent ddd_min~0.15-0.18 + fresh_ms 16-19s + 40-60pct aborts"
+ }
+}

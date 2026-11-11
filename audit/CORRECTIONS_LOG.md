@@ -280,3 +280,76 @@ Tests : 35/35 engine + 60/60 client verts ; release rebuild.
 - `replay_journal.py` : rejoue le journal cBot dans le moteur Rust
   (détection + exec_seq complet) — premier PoC sur données réelles IC.
 - Rapport : `MC/POC_IC_REEL_2026-11-02.md`.
+
+---
+
+## 2026-11-11 — BUG MARGE-PANIER (critique, preuve en réel sur démo)
+
+### Symptôme
+
+Nuit 10→11/11 : l'instance OgTrade (binaire pré-fix, boot 22:57) a tiré
+**7 séquences toutes `legs=1`** pour **−13,63 $** réalisé — des
+"opportunités" d'affichent `net=+0,63..+1,40 $` puis settle négatif.
+Une conversion nue (EURGBP buy, AUDNZD sell, GBPJPY sell...) n'est pas
+de l'arbitrage — c'est le spread + commissions + drift.
+
+### Cause racine
+
+Le détecteur (eval) pricait le panier ÉCONOMIQUE COMPLET du chemin :
+conversion USD→devise de départ (entrée) + jambes intermédiaires +
+conversion devise terminale→USD (sortie). L'exécuteur n'envoyait que
+les paires de `path[]`. Les jambes terminales — qui *portent l'edge* —
+n'existaient jamais comme ordres. Pire : l'entrée était pricée **au
+mid** et la sortie liquidée à un taux théorique non exécuté, ce qui
+gonflait systématiquement les chemins 1-jambe (les 44 opportunités de
+la nuit : toutes legs=1, toutes fictives).
+
+### Correction — même panier partout
+
+- `cs/OgTrade.cs` : `EvalAt` price USD→s0 + jambes + end→USD comme
+  positions réelles (bid/ask selon direction, comm flat par position,
+  unwind RT complet) ; `RunSeqCore` envoie le même panier
+  (`{edge, node_from}` : entrée optionnelle + jambes + sortie
+  optionnelle), qty chaînée aux fills réels, garde stale par ordre,
+  hold (TargetUsd/StopLossUsd/HoldMaxMs) puis unwind ; réconciliation
+  NETTED via `History` (positions absorbées → PnL réalisé récupéré),
+  flatten filet de sécurité, `selftest` attend désormais
+  `[USDJPY, CADJPY]` s0=USD.
+- `cs/OgDetect.cs` : même pricing panier + selftest aligné.
+- `engine/src/eval.rs` : `orders`-style pricing (entrée/jambes/sortie),
+  comm flat `comm_per_side` par position, `usd_pair` (paire + direction)
+  remplace `usd_pair_si`.
+- `engine/src/universe.rs` : helper `usd_edge(c)`.
+- `engine/src/exec.rs` : `orders_of` partagé — `exec_seq`/`exec_settle`
+  traitent fills par ordre du panier ; `start_qty` = NOTIONAL (départ
+  USD explicite). Tests migrés : 35/35.
+- `ctrader_client/src/exec.rs` : `legs_of` émet le panier complet —
+  `PathExec` (intent, qty, pos_deltas, unwind) est générique → couvre
+  entrée/sortie sans autre changement. Tests migrés : 60/60.
+- `audit/poc_engine.py` : `eval_at` panier ; `exec_seq` reconstruit
+  `orders` (entrée + jambes + sortie), comm flat par position,
+  suppression du marquage `usd_liq` fantôme en fin de séquence et du
+  hack `liq_spr` d'unwind.
+
+### Vérification (preuve, pas affirmation)
+
+- Livre cohérent : net **−72,00 $** (négatif ✓). Livre distordu :
+  **+394,37 $** — calcul à la main identique à 1e-13, argmax
+  `[USDJPY, CADJPY]` s0=USD identique en Python et Rust (même
+  tie-break DFS).
+- `cargo test -p engine` : 35/35 ; `cargo test -p ctrader_client` : 60/60.
+- Build `.algo` via ctrader-cli (host algohost.netcore, exige
+  Microsoft.AspNetCore.App 10.0.9 — installé dans `~/.dotnet`) :
+  success, 0 erreur, `OgTrade.algo` 05:40.
+- ⚠ L'instance qui tournait pendant la correction avait booté sur le
+  binaire pré-fix — restart manuel requis pour activer le panier.
+
+### Conséquences
+
+- **Tous les chiffres d'opportunité publiés à ce jour** (103 épisodes
+  +187,70 $ théorique, MC 38 trades/30 min, holdout +61,58 $, etc.)
+  incluent le pricing fantôme — invalide pour la décision de sizing.
+  Recalibrage complet requis sous le modèle panier avant tout live.
+- Le modèle panier augmente le coût par cycle (3 positions + 3 clôtures
+  pour le moindre chemin) → seuil `DddMin` à recalibrer sur corpus réel,
+  pas sur les anciens épisodes.

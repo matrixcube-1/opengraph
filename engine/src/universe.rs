@@ -25,3 +25,15 @@ pub fn pair_nodes(edge: usize) -> (u8, u8) {
     let s = FX[edge];
     (ci(&s[0..3]), ci(&s[3..6]))
 }
+
+/// Indice d'arête `FX` de la paire USD d'une devise (`cUSD` ou `USDc`) ;
+/// `None` pour USD elle-même (pas de paire USDUSD).
+pub fn usd_edge(c: u8) -> Option<u8> {
+    if c == 0 {
+        return None;
+    }
+    (0..FX.len() as u8).find(|&e| {
+        let (a, b) = pair_nodes(e as usize);
+        (a == 0 && b == c) || (a == c && b == 0)
+    })
+}

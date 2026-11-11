@@ -168,22 +168,14 @@ public partial class OgDetect : Robot
 
     // ====================================================== eval_at
     // Port exact de eval.rs / poc_engine.eval_at (Convention A, FX pur).
+    // Prix le PANIER tel qu'il serait execute sur marge NETTED :
+    // [USD->s0] + jambes + [end->USD] — chaque conversion est une
+    // position reelle (correctif 11/11, meme modele qu'OgTrade/eval.rs).
     (int Pi, double Net, double Ddd)? EvalAt(long t)
     {
         var ok = new bool[NPAIR];
         for (int i = 0; i < NPAIR; i++)
             ok[i] = _lastChg[i] != long.MinValue && t - _lastChg[i] <= FreshMs;
-        double[] up = new double[NCURR], upLiq = new double[NCURR], commLiq = new double[NCURR];
-        for (int c = 0; c < NCURR; c++) { up[c] = upLiq[c] = commLiq[c] = double.NaN; }
-        up[0] = 1.0; upLiq[0] = 1.0; commLiq[0] = 0.0;
-        for (int c = 1; c < NCURR; c++)
-        {
-            int sj = _upSym[c]; if (sj < 0 || !ok[sj]) continue;
-            double mid = 0.5 * (_bid[sj] + _ask[sj]);
-            up[c] = _upDirect[c] ? mid : 1.0 / mid;
-            upLiq[c] = _upDirect[c] ? _bid[sj] : 1.0 / _ask[sj];
-            commLiq[c] = _upDirect[c] ? COMM / mid : COMM;
-        }
         var fxOk = new bool[NPAIR];
         for (int i = 0; i < NPAIR; i++)
             fxOk[i] = ok[i] && (_ask[i] - _bid[i]) <= SpreadCap * _med[i];
@@ -191,28 +183,47 @@ public partial class OgDetect : Robot
         double bestNet = double.NegativeInfinity; int bestPi = 0; double bestDdd = 0;
         for (int pi = 0; pi < _paths.Count; pi++)
         {
-            double rate = 1.0, comm = 0.0; bool valid = true;
-            int[] legs = _paths[pi], dir = _pDir[pi], bas = _pBase[pi];
+            int[] legs = _paths[pi], dir = _pDir[pi];
+            int s0 = _pS[pi], end = _pEnd[pi];
+            int se = (s0 != 0) ? _upSym[s0] : -1;
+            int xe = (end != 0) ? _upSym[end] : -1;
+            if (se >= 0 && !fxOk[se]) continue;
+            if (xe >= 0 && !fxOk[xe]) continue;
+
+            double rate = 1.0, comm = 0.0, unwind = 0.0; bool valid = true;
+            if (se >= 0)
+            {
+                rate *= _upDirect[s0] ? 1.0 / _ask[se] : _bid[se];
+                unwind += SpreadCost(se); comm += COMM;
+            }
             for (int li = 0; li < legs.Length; li++)
             {
                 int e = legs[li];
                 if (!fxOk[e]) { valid = false; break; }
-                double ub = up[bas[li]];
-                comm += (ub > 0 && !double.IsNaN(ub)) ? COMM / ub : double.NaN;
                 rate *= (dir[li] == 1) ? _bid[e] : 1.0 / _ask[e];
+                unwind += SpreadCost(e); comm += COMM;
             }
             if (!valid) continue;
-            double upS = up[_pS[pi]];
-            double qty0 = (upS > 0 && !double.IsNaN(upS)) ? NOTIONAL / upS : double.NaN;
-            double usdOut = qty0 * rate * upLiq[_pEnd[pi]];
-            double commFx = (comm + commLiq[_pEnd[pi]]) * CommScale;
-            if (double.IsNaN(usdOut) || double.IsInfinity(usdOut) || double.IsNaN(commFx) || double.IsInfinity(commFx))
+            if (xe >= 0)
+            {
+                rate *= _upDirect[end] ? _bid[xe] : 1.0 / _ask[xe];
+                unwind += SpreadCost(xe); comm += COMM;
+            }
+            double usdOut = NOTIONAL * rate;
+            double commFx = 2.0 * comm * CommScale;
+            if (double.IsNaN(usdOut) || double.IsInfinity(usdOut) || double.IsNaN(commFx) || double.IsInfinity(commFx) || double.IsNaN(unwind))
                 continue;
-            double net = usdOut - NOTIONAL - commFx;
+            double net = usdOut - NOTIONAL - commFx - unwind;
             if (net > bestNet) { bestNet = net; bestPi = pi; bestDdd = usdOut - NOTIONAL; }
         }
         if (double.IsNegativeInfinity(bestNet)) return null;
         return (bestPi, bestNet, bestDdd);
+    }
+
+    double SpreadCost(int e)
+    {
+        double mid = 0.5 * (_bid[e] + _ask[e]);
+        return (mid > 0) ? (_ask[e] - _bid[e]) / mid * NOTIONAL : 0.0;
     }
 
     // ------------------------------------------------- mediane fenetree
@@ -306,7 +317,11 @@ public partial class OgDetect : Robot
             var r2 = EvalAt(1_000);
             if (r2 == null) { Print("[selftest] livre distordu : aucun chemin"); return false; }
             var legs = _paths[r2.Value.Pi];
-            if (legs.Length != 1 || FX[legs[0]] != "CADJPY" || _pDir[r2.Value.Pi][0] != -1)
+            // meme panier 3 positions (USDJPY+CADJPY+USDCAD) : le DFS s0=USD
+            // enregistre [USDJPY,CADJPY] avant [CADJPY]@JPY — parite eval.rs.
+            if (legs.Length != 2 || FX[legs[0]] != "USDJPY" || FX[legs[1]] != "CADJPY"
+                || _pDir[r2.Value.Pi][0] != 1 || _pDir[r2.Value.Pi][1] != -1
+                || _pS[r2.Value.Pi] != 0 || _pEnd[r2.Value.Pi] != 5)
             { Print("[selftest] chemin gagnant inattendu"); return false; }
             if (r2.Value.Net <= 0) { Print("[selftest] net<=0 sur distorsion"); return false; }
             return true;

@@ -211,17 +211,21 @@
   R6/R7/Conv-A corrigés, 43 tests `regime_indicators`, FIX incomplet.
   Avertissements toujours valides : recalibrage Convention A + hold-out
   jour futur requis avant tout mode Trade.
-- `cs/OgTrade.cs` (10/11) — cBot EXECUTION réelle : même eval qu'OgDetect
-  + IOC séquentiel `ExecuteMarketRangeOrder` (équiv. LIMIT IOC natif,
-  tol `MaxRangeBp=2,08`), qty aux fills réels, partiel<QMin→abort+unwind,
-  liquidation résiduel en fin de chemin, compte plat exigé (28 symboles),
-  1 séquence à la fois, `MinSeqGapMs=2000`, breaker 5 échecs, flatten
-  Og à 21h-15min ZRH, `AllowLive=false` → refuse tout compte live.
-  Journal `C:\arb_og_trade\` : leg_send/fill/rej, unwind_fill/fail,
-  settle (pnl, filled, unwound, resid_open). NOTA : sur compte marge
-  NETTED chaque jambe = position — la structure chemin = portefeuille
-  de positions, la profit/loss se cristallise à la liquidation des
-  jambes (sémantique identique au settle Rust).
+- `cs/OgTrade.cs` (11/11, PANIER COMPLET — bug legs=1 corrigé) : l'eval
+  price désormais ce que l'exécuteur envoie : ordres = [USD→devise de
+  départ] + jambes path[] + [devise terminale→USD], chaque ordre =
+  position réelle, qty chaînée aux fills (ExecuteMarketOrder), garde
+  stale MaxRangeBp=2,08 par ordre, partiel<QMin→abort+unwind,
+  hold (TargetUsd/StopLossUsd/HoldMaxMs), unwind de toutes les
+  positions créées, réconciliation NETTED via History (PnL réalisé des
+  positions absorbées), flatten filet de sécurité, 1 séquence à la
+  fois, `MinSeqGapMs=2000`, breaker 5 échecs, `AllowLive=false` →
+  refuse tout compte live. Journal `C:\arb_og_trade\` :
+  leg_send/fill/rej, unwind_fill/fail, settle (pnl, filled, unwound,
+  resid_open). Self-test : argmax attendu `[USDJPY, CADJPY]` s0=USD.
+  ⚠ 11/11 nuit : le binaire pré-fix a tiré 7 séquences legs=1 (-13,63 $)
+  — pricing fantôme entrée mid + sortie non exécutée ; voir
+  `audit/CORRECTIONS_LOG.md` §BUG MARGE-PANIER.
 
 ## Nouveau broker ECN négocié (utilisateur, 02/11/2026) — chemin prioritaire
 - **Commission 2 $ A/R/100 K** (1 $/côté) — vs 3 $/côté IC : économie ~×2
@@ -253,9 +257,9 @@
 - OgTrade.cs eval : ajout `unwind` = Σ_jambes spread_frac×NOTIONAL + comm
   de clôture (2×comm), moins la liquidation modélisée (terminal ≠ USD).
   Effet : terminal-USD +L closes, terminal≠USD +(L-1) closes.
-- **Le même biais existe dans engine/eval.rs** (`usd_liq` price une seule
-  liquidation) — correction Rust à porter : ajouter le coût unwind par jambe
-  avant tout recalibrage/trade via l'engine.
+- ~~Le même biais existe dans engine/eval.rs~~ — CORRIGÉ 11/11 : le
+  bug marge-panier (eval pricait entrée+sortie USD non exécutées) était
+  identique en Rust/Python/C# ; corrigé partout (voir §BUG ci-dessus).
 - Conséquence seuil : un chemin doit détecter ≥ ~+1,2-1,5 $ de net pour
   couvrir l'aller-retour réel à 10K — ddd=0,27 calibré conversion, pas marge.
 
@@ -279,9 +283,23 @@
   remplacée). Params jour : ddd=0.27, fresh=8000, cap 1.76, scale 1.10,
   range 2.08, q_min 0.5, gap 2000, breaker 5, AllowLive=false.
 
+## ⚠ Validité des chiffres ci-dessus (11/11/2026)
+- Tous les résultats MC/corpus/épisodes publiés avant le 11/11 ont été
+  calculés sous l'ancien modèle (entrée mid + sortie USD non exécutée)
+  → nets gonflés, surtout les chemins legs=1 (fictifs). Recalibrage
+  complet sous modèle panier + nouveau holdout requis avant toute
+  décision de sizing. Le coût réel par cycle a augmenté (≥3 positions
+  + ≥3 clôtures) → DddMin à recalibrer sur corpus frais.
+
 ## OgTrade launch-ready (10/11/2026 soir)
-- `ctrader-cli.exe build` trouvé : `AppData/Local/Spotware/cTrader/<hash>/`
-  compile un projet en `.algo` hors GUI (success JSON, erreurs compile).
+- `ctrader-cli.exe build` : la DLL `ctrader-cli.dll` dans
+  `AppData/Local/Spotware/cTrader/<hash>/app_*/` s'invoque via un
+  `dotnet.exe` hôte — installé user-local dans `C:\Users\EVROSIS\.dotnet\`
+  (dotnet-install.ps1). Le build host `algohost.netcore` exige
+  **Microsoft.AspNetCore.App 10.0.9** (à installer dans `~/.dotnet` aussi,
+  sinon « build host stopped unexpectedly ») + desktop cTrader lancé.
+  Commande qui marche :
+  `& "$env:USERPROFILE\.dotnet\dotnet.exe" "...\ctrader-cli.dll" build "<projet>.csproj" --algo-access FullAccess`
   `run`/`backtest`/`optimize` existent aussi mais exigent ctid+pwd-file.
 - OgTrade.cs final : économie marge corrigée (unwind/jambe, comm 2x, liq
   remplacée — parité Rust) + **tolérance IOC logicielle** : avant chaque

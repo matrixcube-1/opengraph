@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 use opengraph::engine::Engine;
 use opengraph::paths::PathTables;
+use opengraph::universe::usd_edge;
 
 use crate::orders::{leg_intent, LegIntent, LegResolution};
 use crate::symbols::{SymInfo, SymTable};
@@ -32,10 +33,26 @@ pub struct LegSpec {
     pub node_to: u8,
 }
 
-/// Déroule un chemin `pi` en spécifications de jambes (`_legs_of` du POC).
+/// Déroule un chemin `pi` en spécifications d'ORDRES du panier marge
+/// complet : `[USD→s0] + jambes + [end→USD]` — chaque ordre est une
+/// position réelle (bug panier 11/11 : avant, les conversions USD
+/// étaient pricées mais jamais envoyées).
 pub fn legs_of(pi: usize, pt: &PathTables) -> Vec<LegSpec> {
-    let mut node = pt.p_s[pi];
-    let mut out = Vec::with_capacity(pt.p_l[pi] as usize);
+    let mut out = Vec::with_capacity(pt.p_l[pi] as usize + 2);
+    let s0 = pt.p_s[pi];
+    let end = pt.p_end[pi];
+    if s0 != 0 {
+        if let Some(e) = usd_edge(s0) {
+            let (a, _) = Engine::edge_nodes(e);
+            out.push(LegSpec {
+                edge: e,
+                d: if a == 0 { 1 } else { -1 },
+                node_from: 0,
+                node_to: s0,
+            });
+        }
+    }
+    let mut node = s0;
     for li in 0..pt.p_l[pi] as usize {
         let e = pt.p_e[pi][li] as u8;
         let d = pt.p_dir[pi][li];
@@ -48,6 +65,17 @@ pub fn legs_of(pi: usize, pt: &PathTables) -> Vec<LegSpec> {
             node_to: nt,
         });
         node = nt;
+    }
+    if end != 0 {
+        if let Some(e) = usd_edge(end) {
+            let (a, _) = Engine::edge_nodes(e);
+            out.push(LegSpec {
+                edge: e,
+                d: if a == end { 1 } else { -1 },
+                node_from: end,
+                node_to: 0,
+            });
+        }
     }
     out
 }
@@ -356,14 +384,18 @@ mod tests {
     #[test]
     fn legs_of_propagates_nodes() {
         let pt = build_tables();
-        // chemin 3 jambes : nœuds chaînés nf->nt->nt2->nt3
+        // panier 3 jambes : entrée USD (si s0 != USD) + jambes chaînées +
+        // sortie USD (si end != USD) — le dernier ordre termine en USD.
         let pi = (0..pt.len()).find(|&pi| pt.p_l[pi] == 3).unwrap();
         let legs = legs_of(pi, &pt);
-        assert_eq!(legs.len(), 3);
-        assert_eq!(legs[0].node_from, pt.p_s[pi]);
-        assert_eq!(legs[0].node_to, legs[1].node_from);
-        assert_eq!(legs[1].node_to, legs[2].node_from);
-        assert_eq!(legs[2].node_to, pt.p_end[pi]);
+        let extra = (pt.p_s[pi] != 0) as usize + (pt.p_end[pi] != 0) as usize;
+        assert_eq!(legs.len(), 3 + extra);
+        let first_from = if pt.p_s[pi] != 0 { 0 } else { pt.p_s[pi] };
+        assert_eq!(legs[0].node_from, first_from);
+        for w in legs.windows(2) {
+            assert_eq!(w[0].node_to, w[1].node_from);
+        }
+        assert_eq!(legs.last().unwrap().node_to, 0); // termine en USD
         for l in legs.iter() {
             let (a, b) = Engine::edge_nodes(l.edge);
             assert_eq!(l.node_from, if l.d == 1 { a } else { b });
@@ -376,33 +408,35 @@ mod tests {
         let pt = build_tables();
         let st = sym_all();
         let pi = path_jpy_cad(&pt);
-        // acc = 15M JPY ; fill BUY CADJPY 90_909 CAD @ 165.02
-        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, Q_MIN, &pt);
+        // acc = 10 K USD ; 1er ordre du panier = entrée USD->JPY :
+        // SELL USDJPY (d=+1). Fill 10_000 USD @ 150.00 -> acc = 1,5M JPY.
+        let mut seq = PathExec::new(1_000, pi, 10_000.0, Q_MIN, &pt);
         let leg = seq.current_leg().unwrap();
-        assert_eq!(leg.d, -1);
+        assert_eq!(leg.d, 1);
+        assert_eq!(leg.node_from, 0); // USD
         let si = st.by_edge(leg.edge).unwrap();
         let coid = "t1".to_string();
         let i = seq
-            .intent_for(165.00, 165.02, si, coid.clone())
+            .intent_for(150.00, 150.02, si, coid.clone())
             .expect("intent");
-        let qty = i.qty_base; // ~90_909 CAD
+        let qty = i.qty_base; // = acc 10_000 USD (base du pair USDJPY)
         let res = LegResolution::Filled {
             qty_base: qty,
-            px_fill: 165.02,
+            px_fill: 150.00,
             order_id: 1,
         };
         match seq.apply_resolution(&res) {
-            LegOutcome::Done => {
+            LegOutcome::Advance { .. } => {
                 assert_eq!(seq.fills.len(), 1);
                 let (frac, px_node) = seq.fills[0];
                 assert!((frac - 1.0).abs() < 0.02, "frac ~1 : {frac}");
-                assert!((px_node - 1.0 / 165.02).abs() < 1e-9);
-                // acc = JPY * (1/165.02) = ~90_894 CAD
-                assert!((seq.acc - 15_000_000.0 / 165.02).abs() / seq.acc < 0.02);
-                // position : +qty CADJPY long
-                assert!((seq.pos_deltas[&leg.edge] - qty).abs() < 1e-9);
+                assert!((px_node - 150.00).abs() < 1e-9);
+                // acc = USD * 150.00 = 1,5M JPY
+                assert!((seq.acc - 10_000.0 * 150.00).abs() / seq.acc < 0.02);
+                // position : -qty USDJPY (short base)
+                assert!((seq.pos_deltas[&leg.edge] + qty).abs() < 1e-9);
             }
-            other => panic!("attendu Done, eu {other:?}"),
+            other => panic!("attendu Advance, eu {other:?}"),
         }
     }
 
@@ -427,24 +461,25 @@ mod tests {
         let pt = build_tables();
         let st = sym_all();
         let pi = path_jpy_cad(&pt);
-        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, Q_MIN, &pt);
+        // 1er ordre = entrée USD->JPY : SELL USDJPY (d=+1).
+        let mut seq = PathExec::new(1_000, pi, 10_000.0, Q_MIN, &pt);
         let leg = seq.current_leg().unwrap();
         let si = st.by_edge(leg.edge).unwrap();
-        let i = seq.intent_for(165.0, 165.02, si, "t".into()).unwrap();
+        let i = seq.intent_for(150.0, 150.02, si, "t".into()).unwrap();
         // fill 20 % de l'acc -> frac_eff ~0.2 < 0.5 -> abort q<q_min
         let small = i.qty_base * 0.2;
         let r = seq.apply_resolution(&LegResolution::Filled {
             qty_base: small,
-            px_fill: 165.02,
+            px_fill: 150.00,
             order_id: 1,
         });
         assert_eq!(r, LegOutcome::Abort { reason: "q<q_min".into() });
-        // le partiel est une VRAIE position -> unwind plan SELL small
+        // le partiel est un short USDJPY -> unwind plan BUY small
         let plan = seq.unwind_plan();
         assert_eq!(plan.len(), 1);
         let (e, tr, q) = plan[0];
         assert_eq!(e, leg.edge);
-        assert_eq!(tr, ProtoTrade::Sell);
+        assert_eq!(tr, ProtoTrade::Buy);
         assert!((q - small).abs() < 1e-9);
     }
 
@@ -452,15 +487,15 @@ mod tests {
     fn unwind_plan_both_sides() {
         let pt = build_tables();
         let pi = path_jpy_cad(&pt);
-        let mut seq = PathExec::new(1_000, pi, 15_000_000.0, Q_MIN, &pt);
-        let e = seq.legs[0].edge;
+        let mut seq = PathExec::new(1_000, pi, 10_000.0, Q_MIN, &pt);
+        let e = seq.legs[0].edge; // USDJPY = arête 2
         seq.pos_deltas.insert(e, 500.0);
         seq.pos_deltas.insert(5, -300.0); // short base sur arête 5
         let plan = seq.unwind_plan();
         assert_eq!(plan.len(), 2);
-        // BTreeMap: arête 5 d'abord
-        assert_eq!(plan[0], (5u8, ProtoTrade::Buy, 300.0));
-        assert_eq!(plan[1], (e, ProtoTrade::Sell, 500.0));
+        // BTreeMap : arête 2 d'abord
+        assert_eq!(plan[0], (2u8, ProtoTrade::Sell, 500.0));
+        assert_eq!(plan[1], (5u8, ProtoTrade::Buy, 300.0));
     }
 
     #[test]

@@ -1,19 +1,21 @@
 //! Évaluation DDD à un instant t — port de `poc_engine.Engine.eval_at`.
 //!
-//! Sémantique identique au POC (Convention A, FX pur) :
+//! Sémantique marge NETTED (correctif 11/11 — bug panier, prouvé live sur
+//! cTrader : 7 séquences legs=1, −13,63 $ de coûts purs) :
 //!
 //! ```text
 //! ok(si)    = quote publiée, non future, âge <= fresh_ms
 //! fx_ok(si) = ok(si) ET spread <= spread_cap x spread médian (cap FX)
-//! rate      = bid   si nœud courant == base (vente base->quote)
-//!             1/ask si nœud courant == quote (achat quote->base)
-//! qty0      = NOTIONAL / up[start]
-//! usd_out   = qty0 x prod(rate) x up_liq[end]  (liquidation exécutable)
-//! comm_leg  = COMM / up[base(leg)]   (par jambe existante seulement)
-//! net       = usd_out - NOTIONAL - (comm_leg + comm_liq[end]) x comm_scale
+//! panier    = [USD->s0] + jambes + [end->USD] — chaque conversion est
+//!             une position marge réelle (exposition résiduelle ~0)
+//! rate      = produit des traversées EXÉCUTABLES de toutes les positions
+//!             (entrée + jambes + sortie — jamais de mid, jamais de
+//!             liquidation non exécutée)
+//! net       = usd_out - NOTIONAL - 2 x comm x nb_pos x comm_scale - unwind
+//! unwind    = re-traversée du spread par position à la clôture
 //! ```
 //!
-//! Chemin invalide si : jambe non chargée, jambe non fx_ok, qty0/usd_out/comm
+//! Chemin invalide si : jambe non chargée, jambe non fx_ok, rate/comm/unwind
 //! non finis. Retourne l'argmax — premier maximum en cas d'égalité, comme
 //! `np.argmax`.
 
@@ -44,27 +46,46 @@ impl Engine {
     ) -> Option<EvalResult> {
         let n = self.data.len();
         let ok: Vec<bool> = (0..n).map(|i| self.ok(i, t, fresh_ms)).collect();
-        let up = self.usd_price(&ok);
-        // Convention A stricte : la devise terminale est valorisée au taux de
-        // liquidation exécutable + commission de cette jambe (jamais au mid).
-        let up_liq = self.usd_liq_price(&ok);
-        let comm_liq = self.usd_liq_comm(&ok);
         // spread relatif vs médian — cap appliqué aux arêtes FX uniquement
         let fx_ok: Vec<bool> = (0..n)
             .map(|i| {
                 ok[i] && !(self.is_fx[i] && (self.ask[i] - self.bid[i]) > spread_cap * self.med[i])
             })
             .collect();
+        // coût de re-traversée du spread à la clôture d'une position ~10K
+        let spread_cost = |si: usize| -> f64 {
+            let mid = 0.5 * (self.bid[si] + self.ask[si]);
+            if mid.is_finite() && mid > 0.0 {
+                (self.ask[si] - self.bid[si]) / mid * NOTIONAL_USD
+            } else {
+                f64::NAN
+            }
+        };
 
         let mut best_net = f64::NEG_INFINITY;
         let mut best_pi = 0usize;
         let mut best_ddd = 0.0;
 
         for pi in 0..pt.len() {
+            let s0 = pt.p_s[pi] as usize;
+            let end = pt.p_end[pi] as usize;
             let mut rate = 1.0f64;
             let mut comm = 0.0f64;
             let mut unwind = 0.0f64;
             let mut valid = true;
+
+            // entrée USD->s0 : position réelle (direct = achat cUSD à l'ask,
+            // inverse = vente USDc au bid) — plus jamais de mid non exécuté.
+            if s0 != 0 {
+                match self.usd_pair(s0) {
+                    Some((se, sd)) if fx_ok[se] => {
+                        rate *= if sd { 1.0 / self.ask[se] } else { self.bid[se] };
+                        unwind += spread_cost(se);
+                        comm += self.comm_per_side;
+                    }
+                    _ => continue,
+                }
+            }
             for li in 0..pt.p_l[pi] as usize {
                 let e = pt.p_e[pi][li] as usize;
                 let Some(si) = self.fx_si[e] else {
@@ -75,12 +96,6 @@ impl Engine {
                     valid = false;
                     break;
                 }
-                let ub = up[pt.p_base[pi][li] as usize];
-                comm += if ub > 0.0 && ub.is_finite() {
-                    self.comm_per_side / ub
-                } else {
-                    f64::NAN
-                };
                 rate *= if pt.p_dir[pi][li] == 1 {
                     self.bid[si]
                 } else {
@@ -88,37 +103,28 @@ impl Engine {
                 };
                 // clôture réelle de la position marge : re-traversée complète
                 // du spread de l'arête (audit marge 10/11 — mesuré live).
-                let mid = 0.5 * (self.bid[si] + self.ask[si]);
-                unwind += if mid.is_finite() && mid > 0.0 {
-                    (self.ask[si] - self.bid[si]) / mid * NOTIONAL_USD
-                } else {
-                    f64::NAN
-                };
+                unwind += spread_cost(si);
+                comm += self.comm_per_side;
             }
             if !valid {
                 continue;
             }
-            let up_s = up[pt.p_s[pi] as usize];
-            let qty0 = if up_s > 0.0 {
-                NOTIONAL_USD / up_s
-            } else {
-                f64::NAN
-            };
-            let end = pt.p_end[pi] as usize;
-            let usd_out = qty0 * rate * up_liq[end];
-            // comm aller-retour : ouverture + clôture par jambe — les clôtures
-            // SONT la liquidation (pas d'ordre liq séparé, comm_liq omise).
-            let comm_rt = 2.0 * comm;
-            // la traversée de la liquidation modélisée (terminal != USD) est
-            // déjà pricée dans usd_out via up_liq -> retrancher ~1 traversée.
-            if let Some(sj) = self.usd_pair_si(end) {
-                let mid2 = 0.5 * (self.bid[sj] + self.ask[sj]);
-                if mid2.is_finite() && mid2 > 0.0 {
-                    unwind -= (self.ask[sj] - self.bid[sj]) / mid2 * NOTIONAL_USD;
+            // sortie end->USD : position réelle (direct = vente cUSD au bid,
+            // inverse = achat USDc à l'ask) — plus de marquage usd_liq.
+            if end != 0 {
+                match self.usd_pair(end) {
+                    Some((xe, xd)) if fx_ok[xe] => {
+                        rate *= if xd { self.bid[xe] } else { 1.0 / self.ask[xe] };
+                        unwind += spread_cost(xe);
+                        comm += self.comm_per_side;
+                    }
+                    _ => continue,
                 }
             }
-            let comm_fx = comm_rt * comm_scale;
-            if !(usd_out.is_finite() && up_s.is_finite() && comm_fx.is_finite() && unwind.is_finite()) {
+            let usd_out = NOTIONAL_USD * rate;
+            // comm aller-retour : ouverture + clôture par position.
+            let comm_fx = 2.0 * comm * comm_scale;
+            if !(usd_out.is_finite() && comm_fx.is_finite() && unwind.is_finite()) {
                 continue;
             }
             let net = usd_out - NOTIONAL_USD - comm_fx - unwind;
@@ -209,22 +215,33 @@ mod tests {
         let pt = build_tables();
         let r = e.eval_at(1_500, 5_000.0, 10.0, 1.0, &pt).unwrap();
 
-        // le chemin gagnant doit être JPY -(CADJPY)-> CAD, 1 jambe
+        // le chemin gagnant exploite la traversée JPY->CAD sur CADJPY.
+        // Panier exécuté : USDJPY + CADJPY + USDCAD (3 positions).
+        // À panier identique et coûts identiques, le DFS depuis s0=USD
+        // enregistre [USDJPY, CADJPY] avant [CADJPY]@JPY/[CADJPY,USDCAD].
         let path = &pt.paths[r.path_idx];
-        assert_eq!(path.len(), 1);
-        let e_idx = FX.iter().position(|&s| s == "CADJPY").unwrap() as u8;
-        assert_eq!(path[0], e_idx);
-        assert_eq!(pt.p_dir[r.path_idx][0], -1); // départ côté quote (JPY)
+        let i_uj = FX.iter().position(|&s| s == "USDJPY").unwrap() as u8;
+        let i_cj = FX.iter().position(|&s| s == "CADJPY").unwrap() as u8;
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], i_uj);
+        assert_eq!(path[1], i_cj);
+        assert_eq!(pt.p_dir[r.path_idx][0], 1);
+        assert_eq!(pt.p_dir[r.path_idx][1], -1);
+        assert_eq!(pt.p_s[r.path_idx], 0); // s0 = USD
+        assert_eq!(pt.p_end[r.path_idx], 5); // end = CAD
 
-        // net attendu : qty0 JPY x (1/ask_reel) -> CAD liquidés exécutable
-        // à 1/ask(USDCAD) ; comm = 2x jambe CADJPY (ouverture + clôture
-        // marge). unwind = spread_CADJPY - spread_USDCAD = 0 (même half).
+        // net attendu (sémantique panier) :
+        //   rate = bid(USDJPY) x (1/ask_CADJPY) x (1/ask_USDCAD)
+        //   comm = 2 x 3 positions x comm_usd ; unwind = 3 x 2e-4 x N
         let mid_cadjpy = ups[5] / ups[3] * 0.995;
-        let ask = mid_cadjpy * 1.0001;
-        let qty0 = crate::fees::NOTIONAL_USD / ups[3];
-        let usd_out = qty0 * (1.0 / ask) / (1.35 * 1.0001);
-        let comm = 2.0 * crate::fees::comm_usd() / ups[5];
-        let expected = usd_out - crate::fees::NOTIONAL_USD - comm;
+        let ask_cadjpy = mid_cadjpy * 1.0001;
+        let bid_usdjpy = (ups[0] / ups[3]) * (1.0 - 1e-4);
+        let ask_usdcad = (ups[0] / ups[5]) * (1.0 + 1e-4);
+        let rate = bid_usdjpy * (1.0 / ask_cadjpy) * (1.0 / ask_usdcad);
+        let usd_out = crate::fees::NOTIONAL_USD * rate;
+        let comm = 2.0 * 3.0 * crate::fees::comm_usd();
+        let unwind = 3.0 * 2e-4 * crate::fees::NOTIONAL_USD;
+        let expected = usd_out - crate::fees::NOTIONAL_USD - comm - unwind;
         assert!((r.net_usd - expected).abs() < 1e-6);
         assert!(r.net_usd > 0.0);
     }

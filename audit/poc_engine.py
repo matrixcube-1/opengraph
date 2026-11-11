@@ -307,12 +307,30 @@ class Engine:
         """État courant -> (best_net, best_pi_global, best_ddd). Vectorisé.
         rows : sous-ensemble de chemins (IDX_FX / IDX_BT) ou None = tous."""
         ok = (self.last_t <= t) & ((t - self.last_t) <= fresh_ms)   # pas de quote future
-        up = self.usd_price(ok)
-        liq_rate, liq_comm = self._usd_liq(ok)
         # validité des arêtes FX : fraîches + spread <= cap x médian (cap FX seul)
         spread_viol = (self.ask - self.bid) > spread_cap * self.MED
         fx_ok = ok & ~(spread_viol & self.IS_FX)
         R = slice(None) if rows is None else rows
+        # --- PANIER MARGE (correctif 11/11 — bug panier, prouvé live sur
+        # cTrader : 7 séquences legs=1, -13,63 $) : un chemin se trade comme
+        # [USD->s0] + jambes + [end->USD] — chaque conversion est une
+        # position réelle. Taux exécutables par devise (jamais de mid) :
+        ent_rate = np.ones(8); ext_rate = np.ones(8)
+        up_ok = np.ones(8, bool); up_spr = np.zeros(8)
+        for i, c in enumerate(CURR):
+            if c == "USD":
+                continue
+            sj = self.sidx.get(c + "USD"); direct = sj is not None
+            if not direct:
+                sj = self.sidx.get("USD" + c)
+            if sj is None:
+                ent_rate[i] = ext_rate[i] = np.nan; up_ok[i] = False
+                continue
+            up_ok[i] = bool(fx_ok[sj])
+            ent_rate[i] = (1.0 / self.ask[sj]) if direct else self.bid[sj]
+            ext_rate[i] = self.bid[sj] if direct else (1.0 / self.ask[sj])
+            m2 = 0.5 * (self.bid[sj] + self.ask[sj])
+            up_spr[i] = (self.ask[sj] - self.bid[sj]) / m2 if m2 > 0 else np.nan
         # taux dirigés par jambe de chemin : (P,3) — E = indice d'arête FX (0..27)
         E = self.P_E[R]
         ISM = self.P_ISM[R]
@@ -329,8 +347,6 @@ class Engine:
                         & metal_ok[np.maximum(m1v, 0)] & metal_ok[np.maximum(m2v, 0)],
                         True)
         leg_ok = np.where(has_leg, np.where(ISM, m_ok, fx_ok_leg), True)
-        base_up = up[np.maximum(self.P_BASE[R], 0)]
-        comm_leg = np.where(self.P_BASE[R] >= 0, COMM / np.where(base_up > 0, base_up, np.nan), 0.0)
         bid_e = np.where(SI >= 0, self.bid[np.maximum(SI, 0)], np.nan)
         ask_e = np.where(SI >= 0, self.ask[np.maximum(SI, 0)], np.nan)
         rate_fx = np.where(self.P_DIR[R] == 1, bid_e, 1.0 / np.where(ask_e > 0, ask_e, np.nan))
@@ -338,37 +354,22 @@ class Engine:
         rate_m = self.bid[m2v] / np.where(self.ask[m1v] > 0, self.ask[m1v], np.nan)
         rate = np.where(ISM, rate_m, rate_fx)
         rate = np.where(has_leg & leg_ok, rate, 1.0)
-        # unwind marge : chaque jambe FX remplie se REFERME à travers le
-        # book (re-traversée complète du spread) — les clôtures SONT la
-        # liquidation (audit marge 10/11, mesuré live -1,2 vs -0,37). La
-        # traversée de la paire USD du terminal (déjà pricée dans liq_rate)
-        # est retranchée pour les terminaux != USD.
+        # unwind marge : chaque position se REFERME à travers le book —
+        # jambes FX + entrée + sortie (plus de marquage usd_liq fantôme).
         mid_e = 0.5 * (bid_e + ask_e)
         spr_frac = np.where(E >= 0,
                             (ask_e - bid_e) / np.where(mid_e > 0, mid_e, np.nan),
                             0.0)
         unwind = np.where(has_leg & leg_ok & (E >= 0), spr_frac, 0.0).sum(1) * NOTIONAL
-        liq_spr = np.zeros(8)
-        for i, c in enumerate(CURR):
-            if c == "USD":
-                continue
-            sj2 = self.sidx.get(c + "USD")
-            if sj2 is None:
-                sj2 = self.sidx.get("USD" + c)
-            if sj2 is not None:
-                m2 = 0.5 * (self.bid[sj2] + self.ask[sj2])
-                liq_spr[i] = (self.ask[sj2] - self.bid[sj2]) / m2 if m2 > 0 else np.nan
-        unwind -= liq_spr[self.P_END[R]] * NOTIONAL
+        s0v = self.P_S[R]; endv = self.P_END[R]
+        need_ent = s0v != 0; need_ext = endv != 0
+        unwind += (np.where(need_ent, up_spr[s0v], 0.0)
+                   + np.where(need_ext, up_spr[endv], 0.0)) * NOTIONAL
         all_ok = leg_ok.all(1) & (self.P_L[R] > 0)
-        prod = np.prod(rate, 1)
-        up_s = up[self.P_S[R]]
-        qty0 = NOTIONAL / np.where(up_s > 0, up_s, np.nan)
-        qty_end = qty0 * prod
-        # Convention A stricte : la devise terminale est marquée au taux de
-        # liquidation exécutable (jamais au mid) + commission de liquidation.
-        up_end = liq_rate[self.P_END[R]]
-        comm_end = liq_comm[self.P_END[R]]
-        # unifié : FX -> qty_end x up[end] ; bout -> x ratio bid/ask (conversions s'annulent)
+        extra_ok = np.where(need_ent, up_ok[s0v], True) & np.where(need_ext, up_ok[endv], True)
+        prod = np.prod(rate, 1) * ent_rate[s0v] * ext_rate[endv]
+        usd_out = NOTIONAL * prod
+        # unifié : bout -> x ratio bid/ask (conversions s'annulent)
         has_b = self.P_HASB[R]
         PB = self.P_BOUT[R]
         bi_arr = np.maximum(PB, 0)
@@ -376,11 +377,13 @@ class Engine:
         ratio_b = np.where(has_b,
                            self.bid[bi_arr] / np.where(self.ask[bi_arr] > 0, self.ask[bi_arr], np.nan),
                            1.0)
-        usd_out = qty_end * up_end * ratio_b
-        valid_path = all_ok & np.isfinite(usd_out) & np.isfinite(up_s) & (~has_b | b_ok)
-        # comm aller-retour : ouverture + clôture par jambe FX — les
-        # clôtures SONT la liquidation (comm_end remplacée, pas additionnée).
-        comm_fx = 2.0 * comm_leg.sum(1) * comm_scale
+        usd_out = usd_out * ratio_b
+        valid_path = all_ok & extra_ok & np.isfinite(usd_out) & (~has_b | b_ok)
+        # comm aller-retour : ouverture + clôture par position marge
+        # (jambes FX + entrée + sortie — flat COMM par position ~10K).
+        n_fx = (has_leg & (E >= 0)).sum(1)
+        n_extra = need_ent.astype(int) + need_ext.astype(int)
+        comm_fx = 2.0 * COMM * (n_fx + n_extra) * comm_scale
         # P_CB (commissions métal/bout, meme modele notionnel cTrader) passe
         # aussi par comm_scale — sinon un hop metal echapperait a la
         # robustesse commission que subissent les jambes FX.
@@ -400,11 +403,47 @@ class Engine:
         j = np.searchsorted(ts, t, "right") - 1
         return (ts[j], bs[j], as_[j], j) if j >= 0 else (-1, np.nan, np.nan, -1)
 
+    def _usd_edge(self, c):
+        """Indice `FX` de la paire USD de la devise `c` (cUSD ou USDc)."""
+        for i, s in enumerate(FX):
+            if (s[:3] == "USD" and s[3:] == CURR[c]) or (s[:3] == CURR[c] and s[3:] == "USD"):
+                return i
+        return None
+
     def exec_seq(self, t0, pi, lat_ms, tau_slip_bp, q_min):
         path = self.paths[pi]
         legs = [e for e in path if not (isinstance(e, tuple) and e[0] == "B")]
         bout = self.P_HASB[pi]
-        if any(isinstance(ei, int) and FX[ei] not in self.data for ei in legs):
+        start = self.p_start[pi]; end = self.P_END[pi]
+        # PANIER MARGE (bug 11/11 — l'ancienne version exécutait path[]
+        # seul alors que l'éval pricait entrée+sortie USD) : ordres =
+        # [USD->s0] + jambes + [end->USD] ; chaque ordre = position réelle.
+        # orders : ("fx", edge_idx, from_node) | ("metal", (m,to), from_node)
+        #          | ("bout", None, from_node)
+        orders = []
+        if start != 0:
+            e0 = self._usd_edge(start)
+            if e0 is None or FX[e0] not in self.data:
+                return None
+            orders.append(("fx", e0, 0))
+        node = start
+        for ei in legs:
+            if isinstance(ei, tuple):
+                orders.append(("metal", ei, node))
+                node = ei[2]
+            else:
+                orders.append(("fx", ei, node))
+                s0 = FX[ei]; a_i, q_i = self.fe[s0]
+                node = q_i if node == a_i else a_i
+        if bout:
+            orders.append(("bout", None, node))
+        elif node != 0:
+            ex = self._usd_edge(node)
+            if ex is None or FX[ex] not in self.data:
+                return None
+            orders.append(("fx", ex, node))
+        if any(FX[ei] not in self.data for kind, ei, _n in orders
+               if kind == "fx"):
             return None
         if bout and (self.P_BOUT[pi] < 0 or self.slist[self.P_BOUT[pi]] not in self.data):
             return None
@@ -412,9 +451,9 @@ class Engine:
         ok = np.ones(len(self.slist), bool)
         up = self.usd_price(ok)
         liq_rate, liq_comm = self._usd_liq(ok)
-        start = self.p_start[pi]
-        qty = NOTIONAL / up[start]
-        cash = 0.0; comm = 0.0; t = t0; filled = 0; node = start; parts = 0
+        qty = NOTIONAL                       # départ en USD explicite
+        cash = 0.0; comm = 0.0; t = t0; filled = 0; parts = 0
+        oedges = [e for _, e, _ in orders]   # arêtes FX par ordre (None sinon)
 
         def liq(node):
             """Convention A : 1 unité de `node` -> USD exécutable (+ comm).
@@ -425,13 +464,13 @@ class Engine:
             if not np.isfinite(c):
                 c = COMM / up[node] if np.isfinite(up[node]) and up[node] > 0 else COMM
             return r, c
-        for k, ei in enumerate(legs + ([-1] if bout else [])):
+        for k, (kind, ei, node) in enumerate(orders):
             t_f = t + lat_ms
-            if ei == -1:
+            if kind == "bout":
                 bi = self.P_BOUT[pi]; sym = self.slist[bi]
                 jt, bid_f, ask_f, j = self.quote_at(sym, t_f)
                 if j < 0 or t_f - jt > 500:
-                    return self._abort("bout stale", legs, filled, cash, comm, t - t0, parts)
+                    return self._abort("bout stale", oedges, filled, cash, comm, t - t0, parts)
                 comm += self.P_CB[pi]
                 r, c = liq(node)
                 usd_end = qty * (bid_f / ask_f) * r          # node = devise IC du bout
@@ -439,7 +478,7 @@ class Engine:
                 t = t_f
                 return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm, why="bout",
                             fills=filled + 1, dur=t - t0, parts=parts)
-            if isinstance(ei, tuple):
+            if kind == "metal":
                 # Saut métal A->B : ordre 1 achète Métal-A à l'ask (paye A,
                 # reçoit métal), ordre 2 vend Métal-B au bid (reçoit B).
                 # Non atomique : exposition métal entre les deux fills —
@@ -454,14 +493,14 @@ class Engine:
                 q_send = 1.0 / as0
                 jt, bid1, ask1, j1 = self.quote_at(s1, t_f)
                 if j1 < 0 or not np.isfinite(q_send) or q_send <= 0:
-                    return self._abort("no quote", legs, filled, cash, comm, t - t0, parts)
+                    return self._abort("no quote", oedges, filled, cash, comm, t - t0, parts)
                 q_now = 1.0 / ask1
                 move = abs(q_now / q_send - 1.0)
                 if move > 3 * slip:
-                    return self._abort("kill IOC", legs, filled, cash, comm, t - t0, parts)
+                    return self._abort("kill IOC", oedges, filled, cash, comm, t - t0, parts)
                 frac = 1.0 if move <= slip else 0.6
                 if frac < q_min:
-                    return self._abort("q<q_min", legs, filled, cash, comm, t - t0, parts)
+                    return self._abort("q<q_min", oedges, filled, cash, comm, t - t0, parts)
                 if frac < 1.0:
                     r, c = liq(node)
                     cash += qty * (1 - frac) * r
@@ -484,16 +523,16 @@ class Engine:
                     return qty_m * (bid1_now if jl >= 0 else bid1) * r
                 if j2 < 0 or not np.isfinite(q_send2) or q_send2 <= 0:
                     cash += liq_metal()
-                    return self._abort("no quote m2", legs, filled, cash, comm, t_f2 - t0, parts)
+                    return self._abort("no quote m2", oedges, filled, cash, comm, t_f2 - t0, parts)
                 q_now2 = bid2
                 move2 = abs(q_now2 / q_send2 - 1.0)
                 if move2 > 3 * slip:
                     cash += liq_metal()
-                    return self._abort("kill IOC m2", legs, filled, cash, comm, t_f2 - t0, parts)
+                    return self._abort("kill IOC m2", oedges, filled, cash, comm, t_f2 - t0, parts)
                 frac2 = 1.0 if move2 <= slip else 0.6
                 if frac2 < q_min:
                     cash += liq_metal()
-                    return self._abort("q<q_min m2", legs, filled, cash, comm, t_f2 - t0, parts)
+                    return self._abort("q<q_min m2", oedges, filled, cash, comm, t_f2 - t0, parts)
                 if frac2 < 1.0:
                     # métal invendu -> liquidation Convention A à la quote
                     # fraîche de la dénomination de départ
@@ -511,15 +550,15 @@ class Engine:
             q_send = bs0 if d == +1 else 1.0 / as0
             jt, bid_f, ask_f, j = self.quote_at(s, t_f)
             if j < 0 or not np.isfinite(q_send) or q_send <= 0:
-                return self._abort("no quote", legs, filled, cash, comm, t - t0, parts)
+                return self._abort("no quote", oedges, filled, cash, comm, t - t0, parts)
             q_now = bid_f if d == +1 else 1.0 / ask_f
             move = abs(q_now / q_send - 1.0)
             slip = tau_slip_bp * 1e-4
             if move > 3 * slip:
-                return self._abort("kill IOC", legs, filled, cash, comm, t - t0, parts)
+                return self._abort("kill IOC", oedges, filled, cash, comm, t - t0, parts)
             frac = 1.0 if move <= slip else 0.6
             if frac < q_min:
-                return self._abort("q<q_min", legs, filled, cash, comm, t - t0, parts)
+                return self._abort("q<q_min", oedges, filled, cash, comm, t - t0, parts)
             if frac < 1.0:
                 r, c = liq(node)
                 cash += qty * (1 - frac) * r
@@ -527,19 +566,17 @@ class Engine:
                 qty *= frac
                 parts += 1
             qty *= q_now
-            comm += COMM / up[base_i] if np.isfinite(up[base_i]) else COMM
+            comm += COMM                        # flat par position (parité eval)
             filled += 1
             node = quote_i if node == base_i else base_i
             t = t_f
-        r, _c = liq(node)
-        usd_end = qty * r                        # résiduel marqué exécutable (Conv. A)
-        # unwind marge : chaque jambe remplie se REFERME à travers le book
-        # (traversée complète + 1 comm) — les clôtures SONT la liquidation ;
-        # la traversée de la paire USD du terminal (déjà dans r) est
-        # retranchée pour les terminaux != USD (audit marge 10/11).
+        # panier complet : node = USD -> usd_end = qty (plus de marquage
+        # usd_liq fantôme). Unwind : chaque position remplie (entrée,
+        # jambes, sortie) se REFERME à travers le book (+ 1 comm).
+        usd_end = qty
         unwind = 0.0
         comm_rt = comm                            # ouvertures (+ partiels)
-        for ei in legs[:filled]:
+        for ei in oedges[:filled]:
             if not isinstance(ei, (int, np.integer)):
                 continue                          # jambe métal : modèle inchangé
             sj = self.sidx.get(FX[ei])
@@ -547,16 +584,7 @@ class Engine:
                 continue
             mid = 0.5 * (self.bid[sj] + self.ask[sj])
             unwind += (self.ask[sj] - self.bid[sj]) / mid * NOTIONAL if mid > 0 else np.nan
-            a_i, _ = self.fe[FX[ei]]
-            comm_rt += COMM / up[a_i] if np.isfinite(up[a_i]) else COMM
-        if node != 0:
-            sj2 = self.sidx.get(CURR[node] + "USD")
-            if sj2 is None:
-                sj2 = self.sidx.get("USD" + CURR[node])
-            if sj2 is not None:
-                m2 = 0.5 * (self.bid[sj2] + self.ask[sj2])
-                if m2 > 0:
-                    unwind -= (self.ask[sj2] - self.bid[sj2]) / m2 * NOTIONAL
+            comm_rt += COMM                       # clôture = 1 comm de plus
         return dict(res="done", pnl=usd_end + cash - NOTIONAL - comm_rt - unwind, why="",
                     fills=filled, dur=t - t0, parts=parts)
 

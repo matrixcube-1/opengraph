@@ -417,10 +417,10 @@ impl Engine {
         c
     }
 
-    /// Série de la paire USD d'une devise (`None` pour USD ou absente) —
-    /// utilisée par le coût d'unwind marge (eval/exec, audit 10/11).
-    pub(crate) fn usd_pair_si(&self, c: usize) -> Option<usize> {
-        self.up_pair[c].map(|(si, _)| si)
+    /// Série + direction de la paire USD (`direct = cUSD`, sinon USDc) —
+    /// utilisée par les jambes d'entrée/sortie du panier marge (11/11).
+    pub(crate) fn usd_pair(&self, c: usize) -> Option<(usize, bool)> {
+        self.up_pair[c]
     }
 
     /// Indices de devises d'une arête : `(base, quote)`.

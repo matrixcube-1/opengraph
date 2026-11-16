@@ -447,3 +447,40 @@
 - Clone sans identifiants `C:\arb_work\mt5-validation` : compilation
   possible, Strategy Tester bloque avec "account is not specified".
   Ne pas annoncer les suites MQL5 executees sur ce clone.
+
+### Essai scalp demo assoupli (16/11, 11:33 locale)
+- `InpDemoRelaxedFilters` est false par defaut, active explicitement sur le
+  chart demo de travail. Mode 2 conserve ; aucun changement aux chemins,
+  quotes, tailles, permissions, SL, timeout ou sorties.
+- Effets seulement sur ACCOUNT_TRADE_MODE_DEMO : seuil scalp plafonne a
+  0.30$/10K, dormance CROISE plafonnee a 250ms, attribution >0.01$ ;
+  couverture des commissions non requise pour entrer. Fraicheur et
+  dormance des ANCRES restent les controles normaux (1000ms ici).
+- Le seuil initial `InpDddMin=0.10` du detecteur est conserve. Un maxNet
+  inferieur a ce seuil ne produit pas d'OPP, meme avec le mode assoupli.
+- Trois tentatives OrderSend d'ouverture maximum, rejets inclus. Jetons
+  reserves avant envoi via GlobalVariableSetOnCondition et persistes
+  avec GlobalVariablesFlush. Cle : OgArb.demoRelaxed.<login>.<magic>.
+  Ne pas supprimer cette cle ni rearmer sans nouvelle decision de test.
+  Le compteur ne se reinitialise pas au restart ; les clotures ne sont
+  jamais soumises au quota d'entree.
+- Si le parametre est actif sur compte reel/concours, scalpFire et
+  snipeScalp refusent l'entree ; le compte demo est recontrole avant
+  reservation/envoi. Mode 1 refuse ce parametre a l'initialisation.
+- Sources : OgDemoFilters.mqh doit accompagner OgArb.mq5. Tests natifs
+  OgDemoFiltersTest.mq5 (aucun ordre broker, cle GV de test unique) :
+  RED 3 PASS/8 FAIL a 11:24:39, GREEN 11 PASS/0 FAIL a 11:30:51.
+- Pour executer un script depuis le Navigateur : clic droit -> Attacher
+  au graphique. Entree ouvre MODIFIER/MetaEditor, pas l'execution.
+  Rafraichir le noeud Scripts pour voir un nouveau .ex5.
+- Activation prouvee au journal : demoRelaxedRequested=1,
+  demoRelaxedActive=1, minDdd=0.30, staleMs=250, attribFloor=0.01,
+  demoAttempts=0 et demoLimit=3 a 11:33:29. Ce marqueur prouve les
+  parametres actifs, PAS une execution : exiger FILL/EXEC puis CLOSE.
+- Resultat de cet essai : trois FILL/EXEC automatiques (EURCAD BUY 0.09,
+  EURGBP BUY 0.09, EURCAD BUY 0.09), trois CLOSE reconcilies a deux deals
+  chacun ; sorties conv, conv, hold. Brut -1.38$, commissions -1.92$,
+  net -3.30$. Dernier heartbeat 11:38:30 : warmed 28/28, basket=0.
+  Quota de trois consomme : ne pas rearmer automatiquement. Preuves broker
+  et EA dans MC/mt5_demo_relaxed_2026-11-16.json. Ce sont des scalps mode 2,
+  pas des paniers complets. Aucun ordre manuel dans cet essai.

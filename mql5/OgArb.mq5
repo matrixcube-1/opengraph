@@ -7,6 +7,7 @@
 
 #include <Trade\Trade.mqh>
 #include "OgCore.mqh"
+#include "OgDemoFilters.mqh"
 
 input group "=== Univers ==="
 input string InpSymbols      = "";            // Paires (vide = 28 Annexe J.2), virgule
@@ -53,6 +54,9 @@ input double InpScalpNetMin  = 0.05;          // Scalp: marge nette cible au-des
 input int    InpStalePxMs    = 1000;          // Scalp: quote dormante >= seuil (ms sans changement de prix)
 input int    InpBreakerFails = 5;             // Breaker apres N echecs
 input long   InpMagic        = 20261112;      // Magic number
+
+input group "=== Demo execution trial ==="
+input bool   InpDemoRelaxedFilters = false;
 
 input group "=== Journal ==="
 input string InpLogFile      = "ogarb_journal.jsonl";  // Fichier journal
@@ -128,6 +132,17 @@ struct OgBasket
    string path;
 };
 OgBasket gB;
+
+string demoFilterKey()
+{
+   return StringFormat("OgArb.demoRelaxed.%I64d.%I64d",AccountInfoInteger(ACCOUNT_LOGIN),InpMagic);
+}
+
+OgScalpPolicy currentScalpPolicy()
+{
+   int attempts=InpDemoRelaxedFilters?ogDemoAttempts(demoFilterKey()):0;
+   return ogScalpPolicy(InpDemoRelaxedFilters,AccountInfoInteger(ACCOUNT_TRADE_MODE),attempts,InpScalpDdd,InpStalePxMs);
+}
 
 // ATTENTION : les globales MQL5 PERSISTENT entre les re-init (F7,
 // changement timeframe). Tout l'etat doit etre remis a zero ici,
@@ -576,7 +591,8 @@ bool legAttribOK(int pi,int e,int from,double k,double &attribUsd,double &F,long
    if(vstep<=0) vstep=0.01;
    double lots=MathFloor(InpNotionalUSD/aToUsd/100000.0/vstep)*vstep;
    attribUsd=InpNotionalUSD*rel;
-   if(!(attribUsd>=k*lots*7.0)){ why=2; return false; }
+   OgScalpPolicy filters=currentScalpPolicy();
+   if(!(attribUsd>=k*lots*7.0*filters.commissionScale)){ why=2; return false; }
    return true;
 }
 
@@ -585,7 +601,8 @@ bool scalpEdge(int pi,long tMs,long staleMs,int &e,int &from,double &attribUsd,d
    attribUsd=-1e18; F=0;                // sentinelle : aucune attribution calculable
    int nl=eng.pL[pi];
    if(nl<1||nl>3){ why="pL invalide"; return false; }   // s0!=USD pL=1 : le croise est la jambe 0
-   double bestA=1.5*7.0*0.1;      // seuil minimal k=1.5 x ~0.1 lot typique
+   OgScalpPolicy filters=currentScalpPolicy();
+   double bestA=filters.attribFloor;      // seuil minimal k=1.5 x ~0.1 lot typique
    int be=-1, bf=-1;
    long maxDorm=0; int nDorm=0,nAnchKo=0; double bestFail=0;
    for(int i=nl-1;i>=0;i--)
@@ -627,7 +644,9 @@ bool scalpEdge(int pi,long tMs,long staleMs,int &e,int &from,double &attribUsd,d
 bool snipeScalp(int pi,double dddIn,long tMs,string &err,double &attribUsd,double &F)
 {
    int e,from;
-   if(!scalpEdge(pi,tMs,InpStalePxMs,e,from,attribUsd,F,err)) return false;
+   OgScalpPolicy filters=currentScalpPolicy();
+   if(!filters.entryAllowed){ err="demo trial: compte non-demo ou limite 3 atteinte"; return false; }
+   if(!scalpEdge(pi,tMs,filters.staleMs,e,from,attribUsd,F,err)) return false;
    string sym=eng.symName[e];
    bool sellBase=(from==eng.symA[e]);
    //--- filling : IOC/FOK requis (un rejet RETURN pendrait l'ordre)
@@ -651,7 +670,7 @@ bool snipeScalp(int pi,double dddIn,long tMs,string &err,double &attribUsd,doubl
    //--- gate comm-aware : le ddd doit couvrir k fois le cout A/R de la jambe.
    //    CADJPY/AUDJPY (0.14 lot -> ~0.98$) exigent ddd>=1.47 ; GBPCAD (0.07) >=0.74.
    double commLeg=lots*7.0;
-   if(dddIn<1.5*commLeg)
+   if(dddIn<1.5*commLeg*filters.commissionScale)
    { err=StringFormat("ddd %.2f<1.5xcomm %.2f",dddIn,1.5*commLeg); return false; }
    //--- prix CAP sur la quote stale (indicatif — market-exec ne garantit
    //    pas le cap ; le garde-fou est le re-poll adverse plus bas)
@@ -691,6 +710,13 @@ bool snipeScalp(int pi,double dddIn,long tMs,string &err,double &attribUsd,doubl
       double cur=sellBase?tk0.bid:tk0.ask;
       double adv=sellBase?(cap-cur):(cur-cap);   // adverse : SELL bid baisse, BUY ask monte
       if(adv>pt){ err="repriced adverse avant envoi"; return false; }
+   }
+   if(InpDemoRelaxedFilters)
+   {
+      if(!TerminalInfoInteger(TERMINAL_CONNECTED)||AccountInfoInteger(ACCOUNT_LOGIN)<=0
+         ||!ogReserveDemoAttempt(demoFilterKey(),AccountInfoInteger(ACCOUNT_TRADE_MODE)))
+      { err="demo trial: envoi refuse (connexion, compte ou limite 3)"; return false; }
+      jlog("EVT",StringFormat("\"demoAttempt\":%d,\"limit\":3",ogDemoAttempts(demoFilterKey())));
    }
    if(!OrderSend(req,res)||(res.retcode!=TRADE_RETCODE_DONE&&res.retcode!=TRADE_RETCODE_DONE_PARTIAL))
    {
@@ -736,8 +762,11 @@ bool snipeScalp(int pi,double dddIn,long tMs,string &err,double &attribUsd,doubl
 bool scalpFire(int pi,double ddd,long tMs)
 {
    if(!InpAllowLive||gB.open) return true;   // position deja ouverte = reel
-   if(ddd<InpScalpDdd*gSc)
-   { skipExec(pi,"scalp",StringFormat("ddd %.2f<%.2f",ddd,InpScalpDdd*gSc)); return false; }
+   OgScalpPolicy filters=currentScalpPolicy();
+   if(!filters.entryAllowed)
+   { skipExec(pi,"demo","compte non-demo ou limite 3 atteinte"); return true; }
+   if(ddd<filters.minDdd*gSc)
+   { skipExec(pi,"scalp",StringFormat("ddd %.2f<%.2f",ddd,filters.minDdd*gSc)); return false; }
    if(!MQLInfoInteger(MQL_TESTER))
    {
       long tta=TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
@@ -771,6 +800,8 @@ bool sessionOk()
 int OnInit()
 {
    resetState();
+   if(InpDemoRelaxedFilters&&InpMode!=2)
+   { Print("OgArb: demo relaxed reserve au mode scalp 2"); return INIT_PARAMETERS_INCORRECT; }
    if(StringLen(InpSymbols)>0)
    {
       string parts[];
@@ -892,6 +923,10 @@ int OnInit()
         InpSessFromUTC,InpSessToUTC,InpMaxLegs,InpTauSlipBp,InpQMin,
         InpMinSeqGapMs,InpHoldSec,InpMode,InpScalpDdd,InpScalpStop,
         (int)InpConvExit,InpMinHoldMs,InpScalpNetMin,InpStalePxMs,InpBreakerFails,InpMagic));
+   OgScalpPolicy filters=currentScalpPolicy();
+   jlog("EVT",StringFormat("\"demoRelaxedRequested\":%d,\"demoRelaxedActive\":%d,\"minDdd\":%.2f,\"staleMs\":%I64d,\"attribFloor\":%.2f,\"demoAttempts\":%d,\"demoLimit\":3",
+        (int)InpDemoRelaxedFilters,(int)filters.relaxed,filters.minDdd,filters.staleMs,filters.attribFloor,
+        InpDemoRelaxedFilters?ogDemoAttempts(demoFilterKey()):0));
    return INIT_SUCCEEDED;
 }
 

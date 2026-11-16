@@ -1,0 +1,62 @@
+{
+  "date": "2026-11-16",
+  "account_type": "DEMO",
+  "server": "ICMarketsSC-Demo",
+  "execution_method": "OgArb_mode_2_automatic_scalp",
+  "manual_orders": false,
+  "detector_paths": 392,
+  "effective_filters": {
+    "detector_min_net_usd_at_10k": 0.10,
+    "scalp_min_ddd_usd_at_10k": 0.30,
+    "cross_min_dormancy_ms": 250,
+    "anchor_dormancy_limit_ms_unchanged": 1000,
+    "attribution_floor_usd": 0.01,
+    "commission_coverage_required_at_entry": false,
+    "max_opening_attempts": 3,
+    "quota_persists_across_restarts": true,
+    "normal_filters_default_unchanged": true,
+    "broker_stop_and_exit_management_unchanged": true
+  },
+  "validation": {
+    "native_MQL5_policy_red": {"passed": 3, "failed": 8, "local_time": "11:24:39"},
+    "native_MQL5_policy_green": {"passed": 11, "failed": 0, "local_time": "11:30:51"},
+    "python_arithmetic_regressions": {"passed": 4, "failed": 0},
+    "compiled_without_errors_or_warnings": ["OgArb", "OgDemoFiltersTest", "OgExecTest", "OgAttribTest"],
+    "OgExecTest_and_OgAttribTest_runtime_not_validated": true
+  },
+  "activation_wts": 1794825209,
+  "trades": [
+    {
+      "symbol": "EURCAD", "side": "BUY", "lots": 0.09, "path_index": 36,
+      "position_ticket": 2092466940,
+      "entry_deal": 1682322468, "entry_price": 1.57259,
+      "exit_order": 2092467017, "exit_deal": 1682322527, "exit_price": 1.57253,
+      "close_reason": "conv", "reconciled_deals": 2,
+      "gross_profit_usd": -0.38, "commission_usd": -0.64, "swap_usd": 0.0, "net_usd": -1.02,
+      "closed": true
+    },
+    {
+      "symbol": "EURGBP", "side": "BUY", "lots": 0.09, "path_index": 261,
+      "position_ticket": 2092467387,
+      "entry_deal": 1682322863, "entry_price": 0.83447,
+      "exit_order": 2092468183, "exit_deal": 1682323572, "exit_price": 0.83446,
+      "close_reason": "conv", "reconciled_deals": 2,
+      "gross_profit_usd": -0.12, "commission_usd": -0.64, "swap_usd": 0.0, "net_usd": -0.76,
+      "closed": true
+    },
+    {
+      "symbol": "EURCAD", "side": "BUY", "lots": 0.09, "path_index": 36,
+      "position_ticket": 2092470008,
+      "entry_deal": 1682325085, "entry_price": 1.57254,
+      "exit_order": 2092471374, "exit_deal": 1682326339, "exit_price": 1.57240,
+      "close_reason": "hold", "reconciled_deals": 2,
+      "gross_profit_usd": -0.88, "commission_usd": -0.64, "swap_usd": 0.0, "net_usd": -1.52,
+      "closed": true
+    }
+  ],
+  "totals": {"opening_attempts": 3, "fills": 3, "closes": 3, "gross_profit_usd": -1.38, "commission_usd": -1.92, "net_usd": -3.30},
+  "last_heartbeat": {"wts": 1794825690, "warmed": "28/28", "dead": 0, "evals": 862, "basket": 0},
+  "post_quota_candidate_blocked_before_send": {"wts": 1794825599, "type": "EXECSKIP", "leg": "demo", "err": "compte non-demo ou limite 3 atteinte"},
+  "evidence": ["Common/Files/ogarb_journal.jsonl: FILL, EXEC and CLOSE after activation_wts", "terminal logs/20261116.log: full entry and ticket-specific closing deals"],
+  "interpretation": "Three genuine EA scalps fully closed. Losses include negative gross price PnL as well as commissions; this is execution evidence, not profitability evidence. Entry quota is exhausted."
+}

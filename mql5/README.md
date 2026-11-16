@@ -14,7 +14,8 @@ port JCloud). Même sémantique **Convention A** : le net d'un panier complet
 
 ## Installation
 
-Copier les 3 fichiers dans `<Terminal>/MQL5/Experts/OgArb/`, compiler `OgArb.mq5`
+Copier `OgArb.mq5`, `OgCore.mqh` et `OgDemoFilters.mqh` dans
+`<Terminal>/MQL5/Experts/OgArb/`, compiler `OgArb.mq5`
 (MetaEditor F7), attacher à n'importe quel graphique. L'EA évalue **toutes** les
 paires configurées par timer (`InpEvalMs`), quel que soit le symbole du chart.
 
@@ -51,6 +52,26 @@ paires configurées par timer (`InpEvalMs`), quel que soit le symbole du chart.
 > la jambe de sortie compense la position d'entrée). Un compte HEDGING fait échouer
 > `OnInit` sauf `InpAllowHedgedAcct=true`. La détection fonctionne sur les deux modes.
 - `InpTauSlipBp`, `InpQMin`, `InpMinSeqGapMs`, `InpBreakerFails`, `InpMagic`
+
+### Essai scalp assoupli, compte demo uniquement
+
+`InpDemoRelaxedFilters=false` par defaut. Si active en mode 2 sur un compte
+`ACCOUNT_TRADE_MODE_DEMO`, le seuil scalp est plafonne a 0.30 $/10K,
+la dormance minimale du croise a 250 ms et le plancher d'attribution a 0.01 $.
+La couverture des commissions n'est plus exigee a l'entree. Les filtres des
+ancres, prix, volumes et permissions, le SL, le timeout et les sorties restent
+inchanges. Les commissions reelles restent dans le P&L de cloture.
+
+Trois requetes d'ouverture au maximum, rejets inclus. Le compteur est une
+Global Variable MT5 persistante `OgArb.demoRelaxed.<login>.<magic>` : un restart
+ne rearme pas l'essai. Ne pas effacer ce compteur sans une nouvelle decision
+de test. Avec ce parametre actif, les comptes reels et concours ne peuvent
+pas ouvrir de scalp. Le mode panier 1 n'accepte pas ce parametre.
+
+`OgDemoFiltersTest.mq5` est un script sans ordres broker : le compiler avec
+`OgDemoFilters.mqh`, puis l'attacher a un graphique depuis Scripts. Il teste
+la politique reelle et reserve trois jetons dans une cle de test unique,
+effacee apres le test. Resultat natif observe le 16/11 : 11 PASS / 0 FAIL.
 
 ### Journal
 - `InpLogFile` — JSONL dans `MQL5/Files` commun : `EVT/HB/EVAL/OPP/EXEC/ABORT`

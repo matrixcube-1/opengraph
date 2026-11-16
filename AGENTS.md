@@ -484,3 +484,28 @@
   Quota de trois consomme : ne pas rearmer automatiquement. Preuves broker
   et EA dans MC/mt5_demo_relaxed_2026-11-16.json. Ce sont des scalps mode 2,
   pas des paniers complets. Aucun ordre manuel dans cet essai.
+
+### Mode demo continu autorise par l'utilisateur (16/11, apres l'essai)
+- L'utilisateur a explicitement demande le fonctionnement continu, sans
+  plafond de trois trades. InpDemoContinuous=false par defaut ; true exige
+  InpDemoRelaxedFilters=true, mode=2 et compte DEMO pour ouvrir.
+- En continu, supprimer uniquement le plafond d'essai, jamais le compteur :
+  la meme cle GV incremente au-dela de 3 ; compteurs invalides refuses.
+  Une seule position suivie, SL, timeout, convergence, permissions, marge
+  broker et controles de prix restent inchanges. Aucun compte reel active.
+- Tests natifs : RED 14 PASS/7 FAIL (11:53 et 11:54), GREEN 21 PASS/0 FAIL
+  (11:56:19). Incluent quatrieme/cinquieme reservation, plafond conserve
+  quand continu=false, refus reel/concours et compteur invalide.
+- Parametres actifs verifies a 11:58:03 : demoContinuous=1, demoLimit=0,
+  demoAttempts=3, seuil scalp effectif 0.30, dormance croise 250ms,
+  attribution 0.01. Ne PAS reinstaller l'ancien plafond d'essai sans une
+  nouvelle demande utilisateur. Le bot doit rester actif apres la session.
+- L'IDE reprend le premier plan apres un appel d'outil. Pour automatiser
+  MT5, activer son HWND et faire tous les clics/captures dans LE MEME exec ;
+  sinon les clics suivants visent l'IDE, pas MT5.
+- Reprise prouvee sans remise a zero : compteurs 4, 5 et 6, chacun suivi
+  de FILL/EXEC. Trade 4 cloture hold : brut +0.31$, comm -0.64$, net -0.33$.
+  Trade 5 cloture tpnet : brut +0.76$, comm -0.64$, net +0.12$.
+  Au snapshot 12:01:04, trade 6 gere ouvert, warmed 28/28, basket=1.
+  Preuves : MC/mt5_demo_continuous_2026-11-16.json. Ne pas arreter le bot
+  ni clore manuellement la position en fin de session CLI.

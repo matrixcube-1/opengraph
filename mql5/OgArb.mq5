@@ -57,6 +57,7 @@ input long   InpMagic        = 20261112;      // Magic number
 
 input group "=== Demo execution trial ==="
 input bool   InpDemoRelaxedFilters = false;
+input bool   InpDemoContinuous = false;
 
 input group "=== Journal ==="
 input string InpLogFile      = "ogarb_journal.jsonl";  // Fichier journal
@@ -141,7 +142,7 @@ string demoFilterKey()
 OgScalpPolicy currentScalpPolicy()
 {
    int attempts=InpDemoRelaxedFilters?ogDemoAttempts(demoFilterKey()):0;
-   return ogScalpPolicy(InpDemoRelaxedFilters,AccountInfoInteger(ACCOUNT_TRADE_MODE),attempts,InpScalpDdd,InpStalePxMs);
+   return ogScalpPolicy(InpDemoRelaxedFilters,AccountInfoInteger(ACCOUNT_TRADE_MODE),attempts,InpScalpDdd,InpStalePxMs,InpDemoContinuous);
 }
 
 // ATTENTION : les globales MQL5 PERSISTENT entre les re-init (F7,
@@ -645,7 +646,7 @@ bool snipeScalp(int pi,double dddIn,long tMs,string &err,double &attribUsd,doubl
 {
    int e,from;
    OgScalpPolicy filters=currentScalpPolicy();
-   if(!filters.entryAllowed){ err="demo trial: compte non-demo ou limite 3 atteinte"; return false; }
+   if(!filters.entryAllowed){ err="demo trial: compte non-demo ou budget d'entree indisponible"; return false; }
    if(!scalpEdge(pi,tMs,filters.staleMs,e,from,attribUsd,F,err)) return false;
    string sym=eng.symName[e];
    bool sellBase=(from==eng.symA[e]);
@@ -714,9 +715,9 @@ bool snipeScalp(int pi,double dddIn,long tMs,string &err,double &attribUsd,doubl
    if(InpDemoRelaxedFilters)
    {
       if(!TerminalInfoInteger(TERMINAL_CONNECTED)||AccountInfoInteger(ACCOUNT_LOGIN)<=0
-         ||!ogReserveDemoAttempt(demoFilterKey(),AccountInfoInteger(ACCOUNT_TRADE_MODE)))
+         ||!ogReserveDemoAttempt(demoFilterKey(),AccountInfoInteger(ACCOUNT_TRADE_MODE),InpDemoContinuous))
       { err="demo trial: envoi refuse (connexion, compte ou limite 3)"; return false; }
-      jlog("EVT",StringFormat("\"demoAttempt\":%d,\"limit\":3",ogDemoAttempts(demoFilterKey())));
+      jlog("EVT",StringFormat("\"demoAttempt\":%d,\"limit\":%d",ogDemoAttempts(demoFilterKey()),InpDemoContinuous?0:3));
    }
    if(!OrderSend(req,res)||(res.retcode!=TRADE_RETCODE_DONE&&res.retcode!=TRADE_RETCODE_DONE_PARTIAL))
    {
@@ -764,7 +765,7 @@ bool scalpFire(int pi,double ddd,long tMs)
    if(!InpAllowLive||gB.open) return true;   // position deja ouverte = reel
    OgScalpPolicy filters=currentScalpPolicy();
    if(!filters.entryAllowed)
-   { skipExec(pi,"demo","compte non-demo ou limite 3 atteinte"); return true; }
+   { skipExec(pi,"demo","compte non-demo ou budget d'entree indisponible"); return true; }
    if(ddd<filters.minDdd*gSc)
    { skipExec(pi,"scalp",StringFormat("ddd %.2f<%.2f",ddd,filters.minDdd*gSc)); return false; }
    if(!MQLInfoInteger(MQL_TESTER))
@@ -802,6 +803,8 @@ int OnInit()
    resetState();
    if(InpDemoRelaxedFilters&&InpMode!=2)
    { Print("OgArb: demo relaxed reserve au mode scalp 2"); return INIT_PARAMETERS_INCORRECT; }
+   if(InpDemoContinuous&&!InpDemoRelaxedFilters)
+   { Print("OgArb: demo continuous exige demo relaxed"); return INIT_PARAMETERS_INCORRECT; }
    if(StringLen(InpSymbols)>0)
    {
       string parts[];
@@ -924,9 +927,9 @@ int OnInit()
         InpMinSeqGapMs,InpHoldSec,InpMode,InpScalpDdd,InpScalpStop,
         (int)InpConvExit,InpMinHoldMs,InpScalpNetMin,InpStalePxMs,InpBreakerFails,InpMagic));
    OgScalpPolicy filters=currentScalpPolicy();
-   jlog("EVT",StringFormat("\"demoRelaxedRequested\":%d,\"demoRelaxedActive\":%d,\"minDdd\":%.2f,\"staleMs\":%I64d,\"attribFloor\":%.2f,\"demoAttempts\":%d,\"demoLimit\":3",
+   jlog("EVT",StringFormat("\"demoRelaxedRequested\":%d,\"demoRelaxedActive\":%d,\"minDdd\":%.2f,\"staleMs\":%I64d,\"attribFloor\":%.2f,\"demoAttempts\":%d,\"demoLimit\":%d,\"demoContinuous\":%d",
         (int)InpDemoRelaxedFilters,(int)filters.relaxed,filters.minDdd,filters.staleMs,filters.attribFloor,
-        InpDemoRelaxedFilters?ogDemoAttempts(demoFilterKey()):0));
+        InpDemoRelaxedFilters?ogDemoAttempts(demoFilterKey()):0,InpDemoContinuous?0:3,(int)InpDemoContinuous));
    return INIT_SUCCEEDED;
 }
 

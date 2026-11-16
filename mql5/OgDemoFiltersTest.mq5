@@ -28,6 +28,22 @@ void OnStart()
    check(ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_DEMO),"reserve_second");
    check(ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_DEMO),"reserve_third");
    check(!ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_DEMO)&&ogDemoAttempts(key)==3,"persistent_budget");
+   p=ogScalpPolicy(true,ACCOUNT_TRADE_MODE_DEMO,3,0.70,1000,true);
+   check(p.relaxed&&p.entryAllowed,"continuous_after_three");
+   p=ogScalpPolicy(true,ACCOUNT_TRADE_MODE_DEMO,100,0.70,1000,true);
+   check(p.entryAllowed,"continuous_after_hundred");
+   p=ogScalpPolicy(true,ACCOUNT_TRADE_MODE_REAL,3,0.70,1000,true);
+   check(!p.relaxed&&!p.entryAllowed,"continuous_real_refused");
+   p=ogScalpPolicy(true,ACCOUNT_TRADE_MODE_CONTEST,3,0.70,1000,true);
+   check(!p.entryAllowed,"continuous_contest_refused");
+   p=ogScalpPolicy(true,ACCOUNT_TRADE_MODE_DEMO,-1,0.70,1000,true);
+   check(!p.entryAllowed,"continuous_invalid_budget_refused");
+   check(ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_DEMO,true)&&ogDemoAttempts(key)==4,"continuous_reserve_fourth");
+   check(ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_DEMO,true)&&ogDemoAttempts(key)==5,"continuous_reserve_fifth");
+   check(!ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_DEMO)&&ogDemoAttempts(key)==5,"bounded_mode_still_refuses");
+   check(!ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_REAL,true)&&ogDemoAttempts(key)==5,"continuous_real_cannot_reserve");
+   GlobalVariableSet(key,-0.5);
+   check(ogDemoAttempts(key)==-1&&!ogReserveDemoAttempt(key,ACCOUNT_TRADE_MODE_DEMO,true),"corrupt_counter_refused");
    if(GlobalVariableCheck(key)) GlobalVariableDel(key);
    PrintFormat("DEMO_FILTER_RESULT %d PASS / %d FAIL",passed,failed);
 }

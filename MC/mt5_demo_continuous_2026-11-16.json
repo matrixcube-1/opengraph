@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-16",
+  "account_type": "DEMO",
+  "server": "ICMarketsSC-Demo",
+  "mode": "OgArb_automatic_scalp_continuous",
+  "user_authorized_continuous_demo": true,
+  "activation_wts": 1794826683,
+  "activation": {"demoRelaxedActive": 1, "demoContinuous": 1, "demoLimit": 0, "demoAttempts": 3, "minDdd": 0.30, "staleMs": 250, "attribFloor": 0.01},
+  "persistent_attempt_counter_reset": false,
+  "normal_defaults_changed": false,
+  "stop_timeout_reconciliation_and_single_position_guard_preserved": true,
+  "validation": {
+    "native_policy_red": {"passed": 14, "failed": 7},
+    "native_policy_green": {"passed": 21, "failed": 0, "local_time": "11:56:19"},
+    "python_accounting_tests": {"passed": 4, "failed": 0},
+    "compile_errors": 0,
+    "compile_warnings": 0
+  },
+  "first_continuous_trade": {
+    "persistent_attempt_number": 4,
+    "symbol": "EURCAD", "side": "BUY", "lots": 0.09,
+    "entry_price": 1.57204, "entry_deal": 1682371323, "position_ticket": 2092522699,
+    "exit_price": 1.57209, "exit_deal": 1682374645, "exit_order": 2092530124,
+    "close_wts": 1794826825, "reconciled_deals": 2,
+    "gross_profit_usd": 0.31, "commission_usd": -0.64, "net_usd": -0.33,
+    "close_reason": "hold", "closed": true
+  },
+  "next_closed_trade_from_EA_journal": {
+    "persistent_attempt_number": 5,
+    "symbol": "EURCAD", "side": "BUY", "lots": 0.09, "entry_price": 1.57214,
+    "close_wts": 1794826856, "reconciled_deals": 2,
+    "gross_profit_usd": 0.76, "commission_usd": -0.64, "net_usd": 0.12,
+    "close_reason": "tpnet", "closed": true
+  },
+  "following_automatic_fill": {"persistent_attempt_number": 6, "wts": 1794826857, "symbol": "EURCAD", "side": "BUY", "lots": 0.09, "price": 1.57227},
+  "snapshot_heartbeat": {"wts": 1794826864, "warmed": "28/28", "dead": 0, "evals": 262, "basket": 1},
+  "bot_left_running": true,
+  "evidence": ["Common/Files/ogarb_journal.jsonl after activation_wts", "terminal logs/20261116.log: entry and closing deals"],
+  "interpretation": "Automatic entries continue beyond the former three-attempt limit without resetting the counter. Stops and exits remain active. Snapshot includes an open managed position; this is not an all-flat or profitability claim."
+}

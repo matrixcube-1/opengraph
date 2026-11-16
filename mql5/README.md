@@ -62,16 +62,25 @@ La couverture des commissions n'est plus exigee a l'entree. Les filtres des
 ancres, prix, volumes et permissions, le SL, le timeout et les sorties restent
 inchanges. Les commissions reelles restent dans le P&L de cloture.
 
-Trois requetes d'ouverture au maximum, rejets inclus. Le compteur est une
-Global Variable MT5 persistante `OgArb.demoRelaxed.<login>.<magic>` : un restart
-ne rearme pas l'essai. Ne pas effacer ce compteur sans une nouvelle decision
-de test. Avec ce parametre actif, les comptes reels et concours ne peuvent
-pas ouvrir de scalp. Le mode panier 1 n'accepte pas ce parametre.
+Par defaut, trois requetes d'ouverture au maximum, rejets inclus.
+`InpDemoContinuous=true` leve ce plafond UNIQUEMENT avec
+`InpDemoRelaxedFilters=true` en mode 2 sur compte demo. Les autres controles
+et sorties restent actifs, une seule position a la fois. Le compteur reste
+une Global Variable MT5 persistante `OgArb.demoRelaxed.<login>.<magic>` et
+continue a incrementer, sans suppression ni remise a zero. Un compteur
+invalide refuse les nouvelles entrees, y compris en continu.
+
+Le journal indique `demoContinuous=1` et `demoLimit=0` en continu ; 0 signifie
+sans plafond d'essai, pas zero autorisation. La valeur par defaut des deux
+parametres est false. Les comptes reels et concours ne peuvent pas ouvrir
+de scalp avec ce mode assoupli. Le mode panier 1 refuse ces parametres.
 
 `OgDemoFiltersTest.mq5` est un script sans ordres broker : le compiler avec
 `OgDemoFilters.mqh`, puis l'attacher a un graphique depuis Scripts. Il teste
-la politique reelle et reserve trois jetons dans une cle de test unique,
-effacee apres le test. Resultat natif observe le 16/11 : 11 PASS / 0 FAIL.
+la politique reelle, le plafond optionnel, les reservations au-dela de trois,
+le refus des comptes reels/concours et des compteurs invalides dans une cle
+de test unique, effacee apres le test. Resultat natif observe le 16/11 :
+21 PASS / 0 FAIL.
 
 ### Journal
 - `InpLogFile` — JSONL dans `MQL5/Files` commun : `EVT/HB/EVAL/OPP/EXEC/ABORT`

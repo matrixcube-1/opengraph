@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-16",
+  "account_type": "DEMO",
+  "server": "ICMarketsSC-Demo",
+  "execution_method": "assisted_manual_MT5_order_dialog",
+  "EA_generated_trade": false,
+  "symbol": "EURUSD",
+  "volume_lots": 0.01,
+  "position_ticket": 2092382746,
+  "entry": {
+    "side": "BUY",
+    "order": 2092382746,
+    "deal": 1682249122,
+    "price": 1.10089,
+    "terminal_log_fill_time": "2026-11-16T11:03:27.445+01:00",
+    "terminal_reported_completion_ms": 367.933,
+    "filled_lots": 0.01
+  },
+  "exit": {
+    "side": "SELL",
+    "order": 2092386689,
+    "deal": 1682252751,
+    "closed_position_ticket": 2092382746,
+    "price": 1.10082,
+    "terminal_log_fill_time": "2026-11-16T11:04:38.801+01:00",
+    "terminal_reported_completion_ms": 372.549,
+    "filled_lots": 0.01
+  },
+  "elapsed_between_fill_log_entries_ms": 71356,
+  "gross_profit_usd": -0.07,
+  "commission_usd": -0.08,
+  "net_result_usd": -0.15,
+  "cost_evidence": "MT5 History position row; net agrees with observed balance difference",
+  "test_position_closed": true,
+  "trade_tab_empty_after_test": true,
+  "bot_filters_changed": false,
+  "close_automation_note": "First close attempt failed before sending any click; subsequent close succeeded. Hold was approximately 71 seconds, not instantaneous.",
+  "evidence": {
+    "terminal_journal": "logs/20261116.log",
+    "history_position_ticket": 2092382746
+  },
+  "validated": ["MT5 demo market entry", "full fill", "ticket-specific full close"],
+  "not_validated": ["OgArb OrderSend path", "multi-leg basket execution", "strategy profitability"]
+}

@@ -425,3 +425,25 @@
   L'EA attache garde le build precedent jusqu'au re-init/restart.
 - deals=0 (8 EXEC non reconcilies 13/11) : pas de statement disque ->
   verification broker en attente.
+
+### Verification et relance 16/11, apres 10:50 locale
+- Compte confirme apres connexion : demo 53146559 ICMarketsSC-Demo,
+  HEDGING (journal Network et titre terminal). L'ancienne lecture NETTING
+  avant connexion ne permettait pas de conclure a une migration du compte.
+- Configuration utilisateur conservee : mode=2, maxLegs=2 (392 chemins),
+  comm=0 pour le detecteur ; les OPP ne representent donc pas un net apres
+  commission. Aucun seuil scalp ni parametre de compte modifie.
+- Correctif cible du garde-fou mode-1 : `ein` contient deja la deduction
+  des commissions configurees. Reconstituer `ein + commModeled` avant la
+  comparaison au plancher `1.5 * commReq` evite de les exiger deux fois.
+  Le taux reel plancher 3.5$/lot/cote et la marge 1.5 sont conserves.
+- Regression arithmetique : `python -m unittest discover -s mql5 -p
+  test_commission_gate.py -v` (sur une seule ligne). Les quatre tests
+  evaluent la condition extraite du source MQL5 ; ils ne remplacent pas
+  une execution MQL5 ni un test broker. Echec reproduit avant correctif.
+- Compilation headless : MetaEditor64.exe /compile:<chemin.mq5>
+  /log:<chemin.log> ; sortie UTF-16, verifier explicitement la ligne
+  Result dans le log (le code retour MetaEditor seul est insuffisant).
+- Clone sans identifiants `C:\arb_work\mt5-validation` : compilation
+  possible, Strategy Tester bloque avec "account is not specified".
+  Ne pas annoncer les suites MQL5 executees sur ce clone.

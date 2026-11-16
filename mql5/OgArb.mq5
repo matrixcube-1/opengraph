@@ -469,8 +469,9 @@ bool execBasket(int pi,long tMs,double ein)
    //    moyen +0.24$ vs cout reel -2.83$ = -119$ : plus jamais un net
    //    ex-commission ne valide un panier.
    double commReq=2.0*eng.basketCommUsd(pi,InpNotionalUSD,3.5);  // 3.5$/lot/side mesure
-   if(ein<1.5*commReq)
-   { skipExec(pi,"precheck",StringFormat("net %.2f<1.5xcommReq %.2f",ein,1.5*commReq)); return false; }
+   double commModeled=2.0*eng.basketCommUsd(pi,InpNotionalUSD,InpCommPer100K)*InpCommScale;
+   if(ein+commModeled<1.5*commReq)
+   { skipExec(pi,"precheck",StringFormat("preFees %.2f<1.5xcommReq %.2f",ein+commModeled,1.5*commReq)); return false; }
    double qty=InpNotionalUSD,qtyTo=qty; string err;
    gB.n=0;
    int filled=0;

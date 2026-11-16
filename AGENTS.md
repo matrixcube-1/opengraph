@@ -381,3 +381,47 @@
 - Recalibrage soiree (18h-22h) : med gap 1.77s, p90 7.2s ; nets max
   +0.15$ -> ZERO fenetre tradeable ces heures — l'edge se concentre
   aux heures liquides (attendu Tokyo ~01h, Londres ~08h).
+
+## Port MQL5 (`mql5/`, workspace `C:\arb_work\og-mql5`) — audit 16/11/2026
+- OgArb v1.20 EA MT5 IC Markets demo 53146559 (hedging API→NETTING lu
+  runtime : contradiction avec le message generique terminal "hedging
+  mode" — l'enum ACCOUNT_MARGIN_MODE fait foi, a verifier sur statement).
+  28 symboles, 2072 chemins (exhaustif, parite Rust/Java prouvee).
+- PERTE MESUREE 13/11 : -119,1$ en ~3,5 h — 43 paniers mode-1
+  (-111,29$, 0/43 gagnants, 100% sortis au timeout 45s) + 6 scalps
+  (-7,50$). CAUSE RACINE : `InpCommPer100K=0` -> le net d'entree
+  excluait la commission reelle (edge moyen +0,24$ vs cout -2,83$).
+  Decomposition : comm 77-84%, slip ~18% (0,5bp, jambe croisee
+  terminale), non-convergence ~5%. RTT ~400 ms/jambe.
+- Divergences de portage trouvees (agent parite) :
+  * `skewMs` (veto lead-lag >300ms) existait MQL5 mais pas Rust ->
+    BACKPORTE : `eval_at(..., skew_ms, pt)`, 0=off, config
+    `engine.skew_ms` defaut 300 ; pybind signature avec defaut 0.0
+    (appelants Python inchanges).
+  * Unwind : plancher mediane existait MQL5, pas Rust -> BACKPORTE
+    dans `spread_cost` (sp=max(courant,med)).
+  * Comm : MQL5 $/lot-base (billing MT5) vs Rust flat $/position —
+    adaptation venue volontaire, documentee (±1,11$/panier max).
+  * `config.rs` ddd_min defaut 2.66 (valeur @100K non rescalee) ->
+    0.27 @10K.
+- Microstructure feed IC (mesuree) : majors FIGEES (EURUSD bid==ask
+  ~65-70%, runs ~100s) alors que les croises CAD/JPY tickent ->
+  l'asymetrie "croise dormant + ancres USD vivants" du scalp est
+  INVERSEE -> 100% SCALPSKIP "pas de croise dormant". ~52 chemins
+  distincts detectent (2,4% de 2072) ; pi=186 USDCAD->EURCAD = 38%.
+- Patches 16/11 (compilation 0/0) : SCALPSKIP.err granularise
+  (vivant maxDorm=Xms / dormant ancres contaminees / dormant
+  attrib<floor) + attrib omis quand sentinelle ; FILL panier gagne
+  dormMs+qAgeMs ; execBasket fail-closed `net >= 1.5x commReq`
+  (commReq = 2x basketCommUsd @3.5$/lot/side REEL, independent de
+  InpCommPer100K) ; OgExecTest warning `act` corrige ; OgAttribTest
+  resynchronise sur les signatures +F/why ; eng.basketCommUsd public.
+- Tests : OgSelfTest 11/11 PASS (injection +0,75 JPY) ; OgMC PASS ;
+  OgE2E PASS (fills simules). OgExecTest/OgAttribTest compilent 0/0,
+  JAMAIS EXECUTES (chart/tester requis — a lancer sur un clone du
+  terminal, pas sur l'instance live).
+- Deploiement : sources `C:\arb_work\og-mql5\` -> copies dans
+  `MQL5\Experts\OgArb\` -> compile MetaEditor64 /compile -> .ex5.
+  L'EA attache garde le build precedent jusqu'au re-init/restart.
+- deals=0 (8 EXEC non reconcilies 13/11) : pas de statement disque ->
+  verification broker en attente.

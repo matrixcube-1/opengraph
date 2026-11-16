@@ -32,7 +32,7 @@ fn main() {
     let mut items: Vec<String> = Vec::new();
     for &t in &tests_t {
         eng.sync(t);
-        match eng.eval_at(t, 500.0, 1.7, 1.0, &pt) {
+        match eng.eval_at(t, 500.0, 1.7, 1.0, 0.0, &pt) {
             None => items.push(format!("{{\"t\": {t}, \"none\": true}}")),
             Some(r) => {
                 let legs: Vec<String> = pt.paths[r.path_idx]

@@ -42,6 +42,7 @@ impl Engine {
         fresh_ms: f64,
         spread_cap: f64,
         comm_scale: f64,
+        skew_ms: f64,
         pt: &PathTables,
     ) -> Option<EvalResult> {
         let n = self.data.len();
@@ -52,11 +53,18 @@ impl Engine {
                 ok[i] && !(self.is_fx[i] && (self.ask[i] - self.bid[i]) > spread_cap * self.med[i])
             })
             .collect();
-        // coût de re-traversée du spread à la clôture d'une position ~10K
+        // coût de re-traversée du spread à la clôture d'une position ~10K —
+        // plancher médiane (parité OgCore `spc`) : une quote stale affiche un
+        // spread comprimé alors que la liquidation paierait le spread normal.
         let spread_cost = |si: usize| -> f64 {
             let mid = 0.5 * (self.bid[si] + self.ask[si]);
             if mid.is_finite() && mid > 0.0 {
-                (self.ask[si] - self.bid[si]) / mid * NOTIONAL_USD
+                let sp = if self.med[si] > 0.0 {
+                    (self.ask[si] - self.bid[si]).max(self.med[si])
+                } else {
+                    self.ask[si] - self.bid[si]
+                };
+                sp / mid * NOTIONAL_USD
             } else {
                 f64::NAN
             }
@@ -73,6 +81,12 @@ impl Engine {
             let mut comm = 0.0f64;
             let mut unwind = 0.0f64;
             let mut valid = true;
+            // skew gate (parité OgCore `skewMs`) : les positions du panier
+            // doivent être temporellement alignées — sinon l'edge est un
+            // artefact lead-lag de la fenêtre de fraîcheur, pas un prix
+            // exécutable. skew_ms <= 0 désactive le gate.
+            let mut t_min = i64::MAX;
+            let mut t_max = i64::MIN;
 
             // entrée USD->s0 : position réelle (direct = achat cUSD à l'ask,
             // inverse = vente USDc au bid) — plus jamais de mid non exécuté.
@@ -82,6 +96,8 @@ impl Engine {
                         rate *= if sd { 1.0 / self.ask[se] } else { self.bid[se] };
                         unwind += spread_cost(se);
                         comm += self.comm_per_side;
+                        t_min = t_min.min(self.last_t[se]);
+                        t_max = t_max.max(self.last_t[se]);
                     }
                     _ => continue,
                 }
@@ -105,6 +121,8 @@ impl Engine {
                 // du spread de l'arête (audit marge 10/11 — mesuré live).
                 unwind += spread_cost(si);
                 comm += self.comm_per_side;
+                t_min = t_min.min(self.last_t[si]);
+                t_max = t_max.max(self.last_t[si]);
             }
             if !valid {
                 continue;
@@ -117,9 +135,14 @@ impl Engine {
                         rate *= if xd { self.bid[xe] } else { 1.0 / self.ask[xe] };
                         unwind += spread_cost(xe);
                         comm += self.comm_per_side;
+                        t_min = t_min.min(self.last_t[xe]);
+                        t_max = t_max.max(self.last_t[xe]);
                     }
                     _ => continue,
                 }
+            }
+            if skew_ms > 0.0 && (t_max - t_min) as f64 > skew_ms {
+                continue;
             }
             let usd_out = NOTIONAL_USD * rate;
             // comm aller-retour : ouverture + clôture par position.
@@ -199,7 +222,7 @@ mod tests {
         let mut e = e;
         e.sync(1_500);
         let pt = build_tables();
-        let r = e.eval_at(1_500, 5_000.0, 10.0, 1.0, &pt).unwrap();
+        let r = e.eval_at(1_500, 5_000.0, 10.0, 1.0, 0.0, &pt).unwrap();
         assert!(r.net_usd < 0.0, "livre cohérent: net devrait être < 0");
     }
 
@@ -213,7 +236,7 @@ mod tests {
         let mut e = e;
         e.sync(1_500);
         let pt = build_tables();
-        let r = e.eval_at(1_500, 5_000.0, 10.0, 1.0, &pt).unwrap();
+        let r = e.eval_at(1_500, 5_000.0, 10.0, 1.0, 0.0, &pt).unwrap();
 
         // le chemin gagnant exploite la traversée JPY->CAD sur CADJPY.
         // Panier exécuté : USDJPY + CADJPY + USDCAD (3 positions).
@@ -264,7 +287,7 @@ mod tests {
         let mut e = e;
         e.sync(1_500);
         let pt = build_tables();
-        let r = e.eval_at(1_500, 5_000.0, 10.0, 1.0, &pt);
+        let r = e.eval_at(1_500, 5_000.0, 10.0, 1.0, 0.0, &pt);
         // AUDUSD jamais vu -> up[AUD] NaN -> tout chemin AUD invalide,
         // mais CADJPY (distordu) reste le meilleur net positif.
         if let Some(r) = r {
@@ -273,6 +296,69 @@ mod tests {
                 assert_ne!(FX[e_idx], "AUDUSD");
             }
         }
+    }
+
+    /// skew_ms (parité OgCore `skewMs`) : un panier dont les positions ont
+    /// des timestamps de dernier tick désalignés > skew_ms est rejeté —
+    /// l'edge est un artefact lead-lag, pas un prix exécutable.
+    #[test]
+    fn eval_skew_gate_vetoes_lag_artifact() {
+        let mut series = book(ups(), 1e-4, Some(("CADJPY", 0.995)));
+        for s in &mut series {
+            if s.sym == "CADJPY" {
+                s.ts = vec![300]; // dernier tick 700 ms avant les autres
+            }
+        }
+        let e = Engine::new(series);
+        let mut e = e;
+        e.sync(1_000);
+        let pt = build_tables();
+        // skew off -> la jambe distordue reste argmax (comportement actuel)
+        let r0 = e.eval_at(1_000, 5_000.0, 10.0, 1.0, 0.0, &pt).unwrap();
+        assert_eq!(pt.p_s[r0.path_idx], 0);
+        // skew 300 ms -> tout panier contenant CADJPY est vetu
+        let r1 = e.eval_at(1_000, 5_000.0, 10.0, 1.0, 300.0, &pt).unwrap();
+        let i_cj = FX.iter().position(|&s| s == "CADJPY").unwrap() as i8;
+        for li in 0..pt.p_l[r1.path_idx] as usize {
+            assert_ne!(pt.p_e[r1.path_idx][li], i_cj, "skew gate: CADJPY utilise");
+        }
+        // le meilleur chemin veto a un net strictement inférieur
+        assert!(r1.net_usd < r0.net_usd);
+    }
+
+    /// Plancher médiane sur l'unwind (parité OgCore `spc`) : quand le spread
+    /// courant est plus serré que la médiane, la clôture coûte la médiane.
+    #[test]
+    fn eval_unwind_floors_spread_at_median() {
+        let build = |wide_hist: bool| {
+            let mut series = book(ups(), 1e-4, Some(("CADJPY", 0.995)));
+            for s in &mut series {
+                if s.sym == "CADJPY" {
+                    let mid = s.bid[0] / (1.0 - 1e-4);
+                    s.ts = vec![800, 900, 1_000];
+                    if wide_hist {
+                        // historique a spread large (1e-3), tick courant serre
+                        s.bid = vec![mid * 0.9995, mid * 0.9995, mid * 0.9999];
+                        s.ask = vec![mid * 1.0005, mid * 1.0005, mid * 1.0001];
+                    } else {
+                        s.bid = vec![mid * 0.9999; 3];
+                        s.ask = vec![mid * 1.0001; 3];
+                    }
+                    s.avol = vec![1.0; 3];
+                    s.bvol = vec![1.0; 3];
+                }
+            }
+            let mut e = Engine::new(series);
+            e.sync(1_000);
+            let pt = build_tables();
+            e.eval_at(1_000, 5_000.0, 10.0, 1.0, 0.0, &pt).unwrap()
+        };
+        let tight = build(false);
+        let wide = build(true);
+        // mediane des spreads CADJPY (hist large) = 1e-3*mid -> plancher 10 $
+        // au lieu du courant 2e-4*mid = 2 $ -> net inferieur de ~8 $.
+        assert_eq!(tight.path_idx, wide.path_idx, "meme argmax attendu");
+        assert!((tight.net_usd - wide.net_usd - 8.0).abs() < 1e-6);
     }
 
     /// spread_cap : spread dilaté -> jambe invalidée.
@@ -295,7 +381,7 @@ mod tests {
         let mut e = e;
         e.sync(1_500);
         let pt = build_tables();
-        let r = e.eval_at(1_500, 5_000.0, 1.5, 1.0, &pt).unwrap();
+        let r = e.eval_at(1_500, 5_000.0, 1.5, 1.0, 0.0, &pt).unwrap();
         // CADJPY exclu par le cap : le meilleur net ne peut pas l'utiliser
         for li in 0..pt.p_l[r.path_idx] as usize {
             assert_ne!(FX[pt.p_e[r.path_idx][li] as usize], "CADJPY");

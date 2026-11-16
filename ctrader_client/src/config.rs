@@ -48,9 +48,15 @@ pub struct EngineParams {
     pub spread_cap: f64,
     #[serde(default = "d_comm")]
     pub comm_scale: f64,
-    /// Seuil de déclenchement net USD (calibration trial #87 : 2.66 $).
+    /// Seuil de déclenchement net USD — NOTIONAL_USD = 10 000 : la valeur
+    /// 2.66 du trial #87 était calibrée @100K ; au notional live c'est 0.27.
     #[serde(default = "d_ddd")]
     pub ddd_min: f64,
+    /// Veto lead-lag (parité OgCore `skewMs`) : un panier dont les positions
+    /// ont des timestamps de dernier tick espacés de plus de `skew_ms` est
+    /// rejeté — l'edge serait un artefact de fraîcheur. 0 désactive.
+    #[serde(default = "d_skew")]
+    pub skew_ms: f64,
     #[serde(default = "d_qmin")]
     pub q_min: f64,
     /// Timeout résolution jambe (ms) — IOC devrait être << 1 s.
@@ -74,7 +80,12 @@ fn d_comm() -> f64 {
     1.10
 }
 fn d_ddd() -> f64 {
-    2.66
+    // 0.27 = 2.66 du trial #87 rescalé au notional live 10K (audit 10/11).
+    0.27
+}
+fn d_skew() -> f64 {
+    // parité OgCore InpSkewMs : rejet des paniers lead-lag > 300 ms.
+    300.0
 }
 fn d_qmin() -> f64 {
     0.5
@@ -93,6 +104,7 @@ impl Default for EngineParams {
             spread_cap: d_cap(),
             comm_scale: d_comm(),
             ddd_min: d_ddd(),
+            skew_ms: d_skew(),
             q_min: d_qmin(),
             leg_timeout_ms: d_leg_to(),
             req_timeout_s: d_req_to(),
@@ -220,7 +232,8 @@ mod tests {
         assert_eq!(p.fresh_ms, 8_000.0);
         assert_eq!(p.spread_cap, 1.76);
         assert_eq!(p.comm_scale, 1.10);
-        assert_eq!(p.ddd_min, 2.66);
+        assert_eq!(p.ddd_min, 0.27);
+        assert_eq!(p.skew_ms, 300.0);
         assert_eq!(p.q_min, 0.5);
     }
 

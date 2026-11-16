@@ -107,7 +107,7 @@ impl Engine {
                 net_usd: net,
                 path_idx: pi,
                 ddd_usd: ddd,
-            }) = self.eval_at(t, fresh_ms, spread_cap, 1.0, pt)
+            }) = self.eval_at(t, fresh_ms, spread_cap, 1.0, 0.0, pt)
             else {
                 // POC : eval None -> continue SANS fermer l'épisode ouvert
                 continue;
@@ -160,7 +160,7 @@ impl Engine {
                 continue;
             }
             self.sync(c.t_ms);
-            let ev = self.eval_at(c.t_ms, p.fresh_ms, p.spread_cap, p.comm_scale, pt);
+            let ev = self.eval_at(c.t_ms, p.fresh_ms, p.spread_cap, p.comm_scale, 0.0, pt);
             let Some(ev) = ev.filter(|e| e.net_usd >= p.ddd_min) else {
                 continue;
             };

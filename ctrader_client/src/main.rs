@@ -949,6 +949,7 @@ async fn handle_frame(
                 cfg.engine.fresh_ms,
                 cfg.engine.spread_cap,
                 cfg.engine.comm_scale,
+                cfg.engine.skew_ms,
                 &st.pt,
             ) else { return Ok(()) };
             if r.net_usd < cfg.engine.ddd_min {

@@ -1,0 +1,26 @@
+{
+ "db": "sqlite:///C:\\Users\\EVROSIS\\OneDrive\\Desktop\\Arbitrage_FX\\audit\\optuna_duka.db",
+ "elapsed_s": 238.76773691177368,
+ "in_sample": [
+  "2026-10-22",
+  "2026-10-23",
+  "2026-10-26"
+ ],
+ "holdout": [
+  "2026-10-27"
+ ],
+ "lat_ms": 5.0,
+ "studies": {
+  "tpe": {
+   "n_trials": 3,
+   "n_feasible": 0,
+   "feasible": []
+  },
+  "rand": {
+   "n_trials": 2,
+   "n_feasible": 0,
+   "feasible": []
+  }
+ },
+ "best": null
+}

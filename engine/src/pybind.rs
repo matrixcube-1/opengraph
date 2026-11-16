@@ -108,6 +108,7 @@ impl PyEngine {
     /// Évalue après chaque tick reçu : même sémantique que le scan POC
     /// (un événement par tick, y compris les doublons à ts égal).
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (e, t, bid, ask, vol, fresh_ms, spread_cap, comm_scale, skew_ms=0.0))]
     fn on_tick(
         &mut self,
         py: Python<'_>,
@@ -119,6 +120,7 @@ impl PyEngine {
         fresh_ms: f64,
         spread_cap: f64,
         comm_scale: f64,
+        skew_ms: f64,
     ) -> Option<(usize, f64, f64)> {
         let eng = &mut self.eng;
         let pt = &self.pt;
@@ -134,7 +136,7 @@ impl PyEngine {
                     vol,
                 },
             );
-            eng.eval_at(t, fresh_ms, spread_cap, comm_scale, pt)
+            eng.eval_at(t, fresh_ms, spread_cap, comm_scale, skew_ms, pt)
                 .map(|r| (r.path_idx, r.net_usd, r.ddd_usd))
         })
     }
@@ -142,6 +144,7 @@ impl PyEngine {
     /// Évalue l'état préchargé à `t` (replay/parité) : avance l'état puis
     /// calcule — équivalent à `sync(t)` + `eval_at(t)` en un appel.
     /// Retourne `(path_idx, net_usd, ddd_usd)` ou `None`.
+    #[pyo3(signature = (t, fresh_ms, spread_cap, comm_scale, skew_ms=0.0))]
     fn eval_at(
         &mut self,
         py: Python<'_>,
@@ -149,12 +152,13 @@ impl PyEngine {
         fresh_ms: f64,
         spread_cap: f64,
         comm_scale: f64,
+        skew_ms: f64,
     ) -> Option<(usize, f64, f64)> {
         let eng = &mut self.eng;
         let pt = &self.pt;
         py.detach(move || {
             eng.sync(t);
-            eng.eval_at(t, fresh_ms, spread_cap, comm_scale, pt)
+            eng.eval_at(t, fresh_ms, spread_cap, comm_scale, skew_ms, pt)
                 .map(|r| (r.path_idx, r.net_usd, r.ddd_usd))
         })
     }
